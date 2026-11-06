@@ -22,4 +22,7 @@ public interface BoletaRepository extends JpaRepository<Boleta, Long> {
 
     /** Para generar el correlativo del número de orden del día, ej: 20261102-003. */
     long countByNumeroOrdenStartingWith(String prefijo);
+
+    /** Permite saber si un usuario tiene compras antes de eliminarlo. */
+    boolean existsByUsuarioId(Long usuarioId);
 }

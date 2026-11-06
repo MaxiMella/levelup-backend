@@ -2,33 +2,51 @@ package cl.duoc.levelup.config;
 
 import cl.duoc.levelup.model.Categoria;
 import cl.duoc.levelup.model.Producto;
+import cl.duoc.levelup.model.Rol;
+import cl.duoc.levelup.model.Usuario;
 import cl.duoc.levelup.repository.CategoriaRepository;
 import cl.duoc.levelup.repository.ProductoRepository;
+import cl.duoc.levelup.repository.UsuarioRepository;
 import org.springframework.boot.CommandLineRunner;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 
 /**
  * Carga los datos iniciales de la tienda (los mismos que tenía el frontend en src/data)
- * la primera vez que se levanta el backend. Si la tabla categoria ya tiene datos, no hace nada.
- * Los usuarios iniciales (admin, vendedor y cliente) se agregan en el paso de seguridad,
- * porque sus contraseñas deben guardarse cifradas.
+ * la primera vez que se levanta el backend. Cada parte se revisa por separado:
+ * - catálogo (categorías y productos): solo si la tabla categoria está vacía.
+ * - usuarios de prueba (admin, vendedor y cliente): solo si la tabla usuario está vacía,
+ *   con sus contraseñas cifradas con BCrypt.
+ * Así, al agregar los usuarios no se duplican las categorías ni los productos ya cargados.
  */
 @Component
 public class DataInitializer implements CommandLineRunner {
 
     private final CategoriaRepository categoriaRepository;
     private final ProductoRepository productoRepository;
+    private final UsuarioRepository usuarioRepository;
+    private final PasswordEncoder passwordEncoder;
 
-    public DataInitializer(CategoriaRepository categoriaRepository, ProductoRepository productoRepository) {
+    public DataInitializer(CategoriaRepository categoriaRepository, ProductoRepository productoRepository,
+                           UsuarioRepository usuarioRepository, PasswordEncoder passwordEncoder) {
         this.categoriaRepository = categoriaRepository;
         this.productoRepository = productoRepository;
+        this.usuarioRepository = usuarioRepository;
+        this.passwordEncoder = passwordEncoder;
     }
 
     @Override
     public void run(String... args) {
+        cargarCatalogo();
+        cargarUsuarios();
+    }
+
+    /** Categorías y productos del frontend. Si ya hay categorías, no hace nada. */
+    private void cargarCatalogo() {
         if (categoriaRepository.count() > 0) {
             return;
         }
@@ -89,6 +107,27 @@ public class DataInitializer implements CommandLineRunner {
         productoRepository.saveAll(productos);
     }
 
+    /**
+     * Usuarios de prueba, uno por rol. Si ya hay usuarios, no hace nada.
+     * Las contraseñas (datos ficticios del enunciado) se guardan cifradas con BCrypt.
+     * Los códigos de referido son fijos para que la demostración sea predecible
+     * (ej: registrarse con LVLPEDRO y ver que Pedro sube a 200 puntos).
+     */
+    private void cargarUsuarios() {
+        if (usuarioRepository.count() > 0) {
+            return;
+        }
+
+        List<Usuario> usuarios = new ArrayList<>();
+        usuarios.add(usuario("Admin", "Level-Up", "admin@levelup.cl", "admin1234",
+                LocalDate.of(1995, 5, 10), Rol.ADMIN, false, 0, "LVLADMIN"));
+        usuarios.add(usuario("Vendedor", "Level-Up", "vendedor@levelup.cl", "vendedor1234",
+                LocalDate.of(1998, 3, 15), Rol.VENDEDOR, false, 0, "LVLVENDE"));
+        usuarios.add(usuario("Pedro", "Hacker", "pedro@duocuc.cl", "pedro1234",
+                LocalDate.of(2002, 8, 20), Rol.CLIENTE, true, 100, "LVLPEDRO"));
+        usuarioRepository.saveAll(usuarios);
+    }
+
     private Categoria categoria(String nombre, String descripcion) {
         Categoria categoria = new Categoria();
         categoria.setNombre(nombre);
@@ -109,5 +148,21 @@ public class DataInitializer implements CommandLineRunner {
         producto.setImagen(imagen);
         producto.setDescripcion(descripcion);
         return producto;
+    }
+
+    private Usuario usuario(String nombre, String apellidos, String correo, String password,
+                            LocalDate fechaNacimiento, Rol rol, boolean descuentoDuoc, int puntos,
+                            String codigoReferido) {
+        Usuario usuario = new Usuario();
+        usuario.setNombre(nombre);
+        usuario.setApellidos(apellidos);
+        usuario.setCorreo(correo);
+        usuario.setPassword(passwordEncoder.encode(password));
+        usuario.setFechaNacimiento(fechaNacimiento);
+        usuario.setRol(rol);
+        usuario.setDescuentoDuoc(descuentoDuoc);
+        usuario.setPuntos(puntos);
+        usuario.setCodigoReferido(codigoReferido);
+        return usuario;
     }
 }

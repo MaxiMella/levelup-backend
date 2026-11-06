@@ -15,8 +15,11 @@ Se irá completando a medida que se agreguen services, controllers, seguridad y 
 3. Con `createDatabaseIfNotExist=true` en la URL, MySQL crea la base `levelup_db` si no existe.
 4. Con `spring.jpa.hibernate.ddl-auto=update`, Hibernate revisa las clases `@Entity` del paquete
    `model` y crea (o actualiza) las tablas. No borra datos.
-5. Cuando el contexto termina de cargar, `DataInitializer` (un `CommandLineRunner`) inserta
-   6 categorías y 15 productos, pero solo si la tabla `categoria` está vacía.
+5. Cuando el contexto termina de cargar, `DataInitializer` (un `CommandLineRunner`) carga dos cosas,
+   cada una revisada por separado para no duplicar datos:
+   - `cargarCatalogo()`: 6 categorías y 15 productos, solo si la tabla `categoria` está vacía.
+   - `cargarUsuarios()`: 3 usuarios de prueba con contraseña cifrada, solo si la tabla `usuario` está vacía
+     (ver sección 11).
 6. `CorsConfig` permite que el frontend React (`http://localhost:5173`) llame a `/api/**`.
 7. `OpenApiConfig` + springdoc generan la documentación en Swagger UI:
    `http://localhost:8080/swagger-ui/index.html`.
@@ -137,8 +140,9 @@ Consulta agregada para el filtro combinado de productos:
 
 ## 4. DTOs de entrada (`dto/`)
 
-`CategoriaRequest`, `ProductoRequest` y `BoletaRequest` (con su lista de `DetalleRequest`) son los datos
-que **envía** el frontend al crear o actualizar. Las respuestas devuelven directamente las entidades.
+`CategoriaRequest`, `ProductoRequest`, `BoletaRequest` (con su lista de `DetalleRequest`), `RegistroRequest`
+y `UsuarioRequest` son los datos que **envía** el frontend al crear o actualizar. Las respuestas devuelven
+directamente las entidades, **excepto en usuarios**, que responden `UsuarioResponse` (sin contraseña).
 
 ¿Por qué no recibir la entidad directamente?
 - El cliente no debería poder mandar el `id` (lo genera MySQL).
@@ -268,8 +272,8 @@ Las excepciones propias extienden `RuntimeException`, así no hay que declarar `
 
 ## 9. Pruebas unitarias (`src/test/.../service/`)
 
-`CategoriaServiceTest` (11 pruebas), `ProductoServiceTest` (14 pruebas) y `BoletaServiceTest` (12 pruebas)
-usan **JUnit 5 + Mockito**:
+`CategoriaServiceTest` (11 pruebas), `ProductoServiceTest` (14), `BoletaServiceTest` (12) y
+`UsuarioServiceTest` (16) usan **JUnit 5 + Mockito**:
 
 - `@ExtendWith(MockitoExtension.class)`: activa Mockito en la clase de prueba.
 - `@Mock`: crea un repositorio falso; **no se usa MySQL**.
@@ -277,6 +281,11 @@ usan **JUnit 5 + Mockito**:
 - `when(repo.metodo(...)).thenReturn(...)`: decide qué devuelve el mock.
 - `assertEquals`, `assertThrows`: comprueban el resultado o que se lance la excepción esperada.
 - `verify(repo).save(...)` / `verify(repo, never()).save(...)`: comprueban si se llamó (o no) a un método.
+
+- `ArgumentCaptor` (en `UsuarioServiceTest`): "atrapa" el objeto que se le pasó a `save` para revisar cómo
+  se iba a guardar (ej: que la contraseña sea el hash y no el texto plano).
+- `lenient()`: permite que un método simulado se llame también con argumentos que la prueba no revisa
+  (ej: `findByCodigoReferido` al generar el código del usuario nuevo).
 
 Patrón de cada prueba: **preparar** (`when`) → **ejecutar** (llamar al service) → **comprobar** (`assert`/`verify`).
 
@@ -376,7 +385,8 @@ Variantes para la demostración:
 ### 10.7 Respuesta y datos del usuario
 - Se devuelve la entidad `Boleta` con `detalles` y el `producto` de cada detalle.
 - `DetalleBoleta.boleta` tiene `@JsonIgnore` para evitar el ciclo boleta → detalle → boleta.
-- La contraseña nunca aparece: `Usuario.password` tiene `@JsonProperty(access = WRITE_ONLY)`.
+- La contraseña nunca aparece: `Usuario.password` tiene `@JsonProperty(access = WRITE_ONLY)`
+  (comprobado con una boleta de `pedro@duocuc.cl`: el usuario sale con todos sus datos menos `password`).
 - `detalles` es `@OneToMany`, que por defecto es **LAZY** (se carga cuando se usa). Se puede convertir a JSON
   en el controller porque Spring Boot deja `spring.jpa.open-in-view` activado por defecto (aparece un aviso
   en el log al arrancar), lo que mantiene abierta la conexión hasta enviar la respuesta.
@@ -392,7 +402,130 @@ Variantes para la demostración:
 
 ---
 
-## 11. Ejemplos de modificaciones que podría pedir el profesor
+## 11. Usuarios (registro, administración y perfil)
+
+Archivos: `UsuarioController` → `UsuarioService` → `UsuarioRepository`, `BoletaRepository` (+ `PasswordEncoder`) → MySQL.
+Las reglas son las mismas del frontend (`src/data/usuarios.js` y `src/utils/validaciones.js`).
+
+### 11.1 Contraseñas con BCrypt
+- `pom.xml` incluye solo `spring-security-crypto`, sin `spring-boot-starter-security`. Así se puede cifrar
+  sin que Spring Security bloquee los endpoints (eso se configura en el paso de JWT).
+- `config/PasswordConfig` declara el bean `PasswordEncoder` → `new BCryptPasswordEncoder()`.
+- `passwordEncoder.encode("pedro1234")` → `$2a$10$...` (60 caracteres). Cada vez da un hash distinto porque
+  incluye una **sal** aleatoria, y no se puede revertir.
+- `passwordEncoder.matches("pedro1234", hash)` → `true`/`false`. Es lo que usará el login.
+- Se cifra en: `UsuarioService.registrar`, `crear`, `actualizar` (solo si viene una contraseña nueva)
+  y `DataInitializer`.
+- Para comprobarlo en MySQL: `SELECT correo, password FROM usuario;` → todas empiezan con `$2a$10$`.
+
+### 11.2 Por qué hay `UsuarioResponse`
+En el resto de la API se devuelven entidades. En usuarios se responde `UsuarioResponse`, que **no tiene el
+campo `password`**, así es imposible enviarlo por error. `UsuarioResponse.desde(usuario)` copia los campos
+uno por uno. Además, la entidad `Usuario` sigue teniendo `@JsonProperty(WRITE_ONLY)` en `password`, para
+cuando aparece dentro de una `Boleta`.
+
+### 11.3 DTOs y validaciones (iguales al frontend)
+| Campo | Regla | Anotación |
+|---|---|---|
+| nombre / apellidos | 2 a 50 caracteres; letras (con tildes y ñ) separadas por espacio, `-` o `'` | `@Size(min = 2, max = 50)` + `@Pattern("^\\s*\\p{L}+(?:[ '-]\\p{L}+)*\\s*$")` |
+| correo | `algo@dominio.ext`, con extensión de 2 o más caracteres | `@Pattern("^\\s*[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}\\s*$")` |
+| password | Mínimo 8, con letras y números (máximo 72, el límite de BCrypt) | `@Pattern("^(?=.*[a-zA-Z])(?=.*\\d).{8,72}$")` |
+| fechaNacimiento | Obligatoria y pasada | `@NotNull @Past` (los 18 años se revisan en el service) |
+
+- `\p{L}` = cualquier letra Unicode (incluye á, ñ, ü). `(?=.*\d)` = "en algún lugar hay un dígito" (lookahead).
+- Los `\s*` de los extremos aceptan espacios al inicio y al final, porque el frontend valida con `trim()`.
+  El service guarda los datos sin esos espacios.
+- No se usa `@Email` porque acepta `ana@gmail` sin `.com`, y el frontend lo rechaza.
+- `RegistroRequest`: lo que llena el cliente, más `codigoReferido` opcional. No tiene `rol`: siempre es CLIENTE.
+- `UsuarioRequest` (admin): agrega `rol`, no tiene `codigoReferido` (el admin no puede regalar puntos) y
+  `password` es opcional (al editar, vacía = mantener la actual; al crear, el service la exige → 400).
+
+### 11.4 Qué hace `UsuarioService.registrar` (con `@Transactional`)
+1. Normaliza el correo (`trim().toLowerCase()`) y revisa que no exista → **409**.
+2. Calcula la edad con `Period.between(fechaNacimiento, hoy).getYears()` → **400** si es menor de 18.
+3. Si viene `codigoReferido`, lo busca (`trim().toUpperCase()`) → **400** si no existe. Se revisa **antes**
+   de guardar, para no crear el usuario con un código inválido.
+4. Crea el usuario: contraseña cifrada, rol `CLIENTE`, `descuentoDuoc` si el correo termina en `@duoc.cl`
+   o `@duocuc.cl`, 0 puntos y un código de referido nuevo.
+5. Con referido válido: el nuevo queda con **100 puntos** y `referidoPor = "LVLPEDRO"`, y quien lo refirió
+   suma **100 puntos**. Se guardan los dos; por eso el método es `@Transactional`.
+
+**Código de referido** (misma lógica del frontend): `"LVL"` + hasta 5 letras A–Z del nombre en mayúsculas
++ un número de 10 a 99. Ej: `"Valentina"` → `LVLVALEN58`; `"María José"` → `LVLMARAJ42` (las letras con tilde
+se descartan, igual que en JavaScript). A diferencia del frontend, se revisa que el código no exista. Con 2 dígitos
+hay solo 90 opciones por nombre, así que después de 20 intentos se usan 4 dígitos.
+
+### 11.5 Mantenedor del administrador
+- `listar(rol)`: `findAll()` o `findByRol(rol)`. Con `?rol=jefe` responde 400, porque Spring no puede
+  convertir "jefe" al enum `Rol`.
+- `crear`: igual que el registro, pero con el rol elegido y sin referido.
+- `actualizar`: el correo no puede ser de **otro** usuario (409); el suyo propio sí. `descuentoDuoc` se
+  recalcula siempre según el correo. Puntos y código de referido no cambian.
+- `eliminar`: si `boletaRepository.existsByUsuarioId(id)` → **409** (sus boletas quedarían apuntando a un
+  usuario que no existe).
+- **Perfil**: por ahora el usuario ve su perfil con `GET /api/v1/usuarios/{id}` y lo edita con `PUT`.
+  Con JWT lo natural será `GET/PUT /api/v1/usuarios/me`, tomando el id del token.
+
+### 11.6 Endpoints
+| Método | Ruta | OK | Errores |
+|---|---|---|---|
+| POST | `/api/v1/usuarios/registro` | 201 | 400 (validación, menor de edad, referido inexistente), 409 (correo) |
+| GET | `/api/v1/usuarios?rol=` | 200 | 400 (rol inválido) |
+| GET | `/api/v1/usuarios/{id}` | 200 | 404 |
+| POST | `/api/v1/usuarios` | 201 | 400, 409 |
+| PUT | `/api/v1/usuarios/{id}` | 200 | 400, 404, 409 |
+| DELETE | `/api/v1/usuarios/{id}` | 204 | 404, 409 (tiene boletas) |
+
+Historial de compras: `GET /api/v1/boletas/usuario/{id}` (sección 10).
+
+### 11.7 Usuarios de prueba (`DataInitializer.cargarUsuarios`)
+| Correo | Contraseña | Rol | Datos |
+|---|---|---|---|
+| admin@levelup.cl | admin1234 | ADMIN | código `LVLADMIN` |
+| vendedor@levelup.cl | vendedor1234 | VENDEDOR | código `LVLVENDE` |
+| pedro@duocuc.cl | pedro1234 | CLIENTE | descuento Duoc, 100 puntos, código `LVLPEDRO` |
+
+Son datos ficticios del enunciado. No deben reutilizarse en ningún sistema real.
+
+### 11.8 JSON de ejemplo para Swagger
+**Registro con referido** (`POST /api/v1/usuarios/registro`): Pedro sube de 100 a 200 puntos.
+```json
+{
+  "nombre": "Valentina",
+  "apellidos": "Rojas",
+  "correo": "valentina.rojas@duoc.cl",
+  "password": "valen1234",
+  "fechaNacimiento": "2003-04-12",
+  "codigoReferido": "LVLPEDRO"
+}
+```
+Variantes: `"fechaNacimiento": "2012-01-01"` → 400 (menor de edad); `"codigoReferido": "LVLNOEXISTE"` → 400;
+repetir el mismo correo → 409; `"password": "abcdefgh"` → 400 (sin números).
+
+**Crear un vendedor** (`POST /api/v1/usuarios`), con el rol en **mayúsculas**:
+```json
+{
+  "nombre": "Sofía",
+  "apellidos": "Vega",
+  "correo": "sofia@levelup.cl",
+  "password": "sofia1234",
+  "fechaNacimiento": "1999-09-09",
+  "rol": "VENDEDOR"
+}
+```
+Para editarlo sin cambiar la contraseña, se usa `PUT /api/v1/usuarios/{id}` con el mismo JSON y `"password": ""`.
+
+**Compra con descuento Duoc** (`POST /api/v1/boletas` con `"usuarioId": 3`, Pedro): con el Mousepad
+(id 14, oferta 14.990) → descuento 2.998, total 11.992, neto 10.077, IVA 1.915.
+
+### 11.9 Diferencia pendiente con el frontend: mayúsculas en los roles
+El frontend usa `"admin"` y `"cliente"`, y el backend `ADMIN`, `VENDEDOR` y `CLIENTE` (enum `Rol`). Hoy, si se
+envía `"rol": "cliente"`, la respuesta es 400 ("El cuerpo de la petición no es un JSON válido"). Al conectar
+el frontend hay que enviar y comparar los roles en mayúsculas.
+
+---
+
+## 12. Ejemplos de modificaciones que podría pedir el profesor
 
 ### Agregar un campo a una entidad (ej: `marca` en Producto)
 1. En `Producto.java`:
@@ -470,9 +603,30 @@ En `BoletaService`: `PORCENTAJE_DESCUENTO_DUOC = 0.15`. Actualizar los valores e
 ### Cambiar la regla del pago simulado
 Está en `BoletaService.simularPago(correo)`. Ej: rechazar también si el total supera $2.000.000.
 
+### Cambiar los puntos por referido (ej: 150)
+`UsuarioService.PUNTOS_POR_REFERIDO = 150`. Actualizar los valores esperados en
+`registrar_conReferidoValido_sumaPuntosAAmbos` y avisar al frontend, que tiene su propia constante.
+
+### Cambiar la edad mínima (ej: 16 años)
+`UsuarioService.EDAD_MINIMA = 16`. La prueba `registrar_menorDeEdad...` usa 17 años: hay que cambiarla a 15.
+
+### Agregar un campo al usuario (ej: `telefono`)
+1. `Usuario`: `@Column(length = 15) private String telefono;`
+2. `RegistroRequest` y `UsuarioRequest`: el campo con `@Pattern(regexp = "^\\+?\\d{8,12}$", message = "...")`.
+3. `UsuarioResponse`: el campo y `response.setTelefono(usuario.getTelefono())` en `desde(...)`.
+4. `UsuarioService`: `usuario.setTelefono(...)` en `registrar` y en `copiarDatos`.
+Si se olvida el paso 3, el teléfono se guarda pero nunca aparece en las respuestas.
+
+### Agregar otro dominio con descuento (ej: `@profesor.duoc.cl`)
+En `UsuarioService.esCorreoDuoc`, agregar `|| correo.endsWith("@profesor.duoc.cl")`, y una prueba nueva.
+
+### Endpoint para canjear puntos (ej: `PATCH /api/v1/usuarios/{id}/canjear?puntos=50`)
+Service: buscar al usuario; si `puntos > usuario.getPuntos()` → `DatosInvalidosException`; si no, restar y
+guardar. Controller: `@PatchMapping("/{id}/canjear")` con `@RequestParam Integer puntos` y `@Operation`.
+
 ---
 
-## 12. Comprobación del arranque
+## 13. Comprobación del arranque
 
 Al ejecutar `./mvnw spring-boot:run` (con `show-sql=true`) se ve en la consola:
 - Los `create table` de `categoria`, `producto`, `usuario`, `boleta` y `detalle_boleta`.
@@ -484,4 +638,5 @@ USE levelup_db;
 SHOW TABLES;
 SELECT COUNT(*) FROM categoria;  -- 6
 SELECT COUNT(*) FROM producto;   -- 15
+SELECT correo, rol, LEFT(password, 7) FROM usuario;  -- 3 usuarios iniciales, hash $2a$10$
 ```
