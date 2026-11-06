@@ -137,8 +137,8 @@ Consulta agregada para el filtro combinado de productos:
 
 ## 4. DTOs de entrada (`dto/`)
 
-`CategoriaRequest` y `ProductoRequest` son los datos que **envía** el frontend al crear o actualizar.
-Las respuestas devuelven directamente las entidades.
+`CategoriaRequest`, `ProductoRequest` y `BoletaRequest` (con su lista de `DetalleRequest`) son los datos
+que **envía** el frontend al crear o actualizar. Las respuestas devuelven directamente las entidades.
 
 ¿Por qué no recibir la entidad directamente?
 - El cliente no debería poder mandar el `id` (lo genera MySQL).
@@ -268,7 +268,8 @@ Las excepciones propias extienden `RuntimeException`, así no hay que declarar `
 
 ## 9. Pruebas unitarias (`src/test/.../service/`)
 
-`CategoriaServiceTest` (11 pruebas) y `ProductoServiceTest` (14 pruebas) usan **JUnit 5 + Mockito**:
+`CategoriaServiceTest` (11 pruebas), `ProductoServiceTest` (14 pruebas) y `BoletaServiceTest` (12 pruebas)
+usan **JUnit 5 + Mockito**:
 
 - `@ExtendWith(MockitoExtension.class)`: activa Mockito en la clase de prueba.
 - `@Mock`: crea un repositorio falso; **no se usa MySQL**.
@@ -284,7 +285,114 @@ por eso sí necesita MySQL encendido.
 
 ---
 
-## 10. Ejemplos de modificaciones que podría pedir el profesor
+## 10. Boletas (órdenes de compra)
+
+Reemplazan el checkout simulado del frontend. Archivos:
+`BoletaController` → `BoletaService` → `BoletaRepository`, `ProductoRepository`, `UsuarioRepository` → MySQL.
+
+### 10.1 Entrada: `BoletaRequest` y `DetalleRequest`
+- Datos del cliente: `nombre`, `apellidos`, `correo` (`@Email`), `calle`, `region` y `comuna` son obligatorios
+  (`@NotBlank`); `depto` e `indicaciones` son opcionales.
+- `usuarioId` es opcional (`null` = visitante). Por ahora viene en el JSON; con JWT se tomará del token.
+- `items`: `@NotEmpty` (al menos 1) y `List<@Valid DetalleRequest>`, así se valida cada item
+  (`productoId` obligatorio, `cantidad` `@Min(1)`). Los errores aparecen como `"items[0].cantidad"`.
+- **El precio no viene del frontend**: se toma de la base de datos, así nadie puede comprar más barato
+  modificando el JSON.
+
+### 10.2 Qué hace `BoletaService.crear` (paso a paso)
+1. Si viene `usuarioId`, busca al usuario → **404** si no existe.
+2. Por cada item:
+   - Si el producto está repetido en la orden → **400** (si no, dos líneas podrían superar el stock en total).
+   - Busca el producto → **404** si no existe.
+   - Revisa el stock → **409** si no alcanza, indicando el producto, la cantidad disponible y la solicitada.
+   - Precio unitario = `precioOferta` si existe y es menor que `precio`; si no, `precio`.
+   - Crea el `DetalleBoleta` (cantidad, precioUnitario, subtotal) y lo agrega con `boleta.agregarDetalle(detalle)`.
+3. Montos (los precios **incluyen IVA**):
+   - `subtotal` = suma de los subtotales de los detalles.
+   - `descuento` = `Math.round(subtotal * 0.20)` si el usuario tiene `descuentoDuoc`; si no, 0.
+   - `total = subtotal - descuento`.
+   - `neto = Math.round(total / 1.19)` e `iva = total - neto`.
+4. Pago simulado (igual que el frontend): si el correo contiene `"error"` → `RECHAZADA`; si no → `PAGADA`.
+   **Solo si queda PAGADA** se descuenta el stock de cada producto.
+5. `fecha = LocalDateTime.now()` y `numeroOrden = yyyyMMdd-NNN`: se cuentan las boletas que ya empiezan
+   con el prefijo de hoy (`countByNumeroOrdenStartingWith("20261106-")`) y se suma 1 → `20261106-003`.
+6. `boletaRepository.save(boleta)` guarda la boleta **y sus detalles** gracias a `cascade = CascadeType.ALL`.
+
+La boleta rechazada **también se guarda** (queda el registro del intento) y la respuesta es 201 en ambos
+casos: el frontend lee `estado` para mostrar "pago exitoso" o "pago con error".
+
+### 10.3 ¿Por qué `@Transactional` en `crear`?
+Todo lo que se hace en el método es una sola transacción de base de datos: o se guarda todo
+(boleta, detalles y stock descontado) o no se guarda nada. Si algo falla después de modificar la base,
+por ejemplo al guardar la boleta, se deshace el stock que ya se había descontado.
+
+### 10.4 Ejemplo de cálculo
+| Producto | Precio | Oferta | Cantidad | Precio unitario | Subtotal |
+|---|---|---|---|---|---|
+| PlayStation 5 Slim 1TB | 499.990 | – | 1 | 499.990 | 499.990 |
+| Audífonos Gamer 7.1 | 59.990 | 49.990 | 2 | 49.990 | 99.980 |
+
+- Visitante: subtotal 599.970, descuento 0, total 599.970 → neto = round(599.970 / 1,19) = **504.176**, IVA = **95.794**.
+- Usuario Duoc con el mismo carrito: descuento = round(599.970 × 0,20) = 119.994, total 479.976,
+  neto = round(479.976 / 1,19) = 403.341, IVA = 76.635.
+
+### 10.5 Endpoints
+| Método | Ruta | OK | Errores |
+|---|---|---|---|
+| POST | `/api/v1/boletas` | 201 (PAGADA o RECHAZADA) | 400, 404, 409 |
+| GET | `/api/v1/boletas` | 200, de la más reciente a la más antigua | – |
+| GET | `/api/v1/boletas/{id}` | 200 | 404 |
+| GET | `/api/v1/boletas/numero/{numeroOrden}` | 200 | 404 |
+| GET | `/api/v1/boletas/usuario/{usuarioId}` | 200 (lista vacía si no ha comprado) | 404 si el usuario no existe |
+
+### 10.6 JSON de ejemplo para probar `POST /api/v1/boletas` en Swagger
+En Swagger UI → **Boletas** → `POST /api/v1/boletas` → **Try it out** → pegar:
+
+```json
+{
+  "nombre": "Ana",
+  "apellidos": "Pérez Soto",
+  "correo": "ana.perez@gmail.com",
+  "calle": "Av. Siempre Viva 123",
+  "depto": "Depto 42",
+  "region": "Región Metropolitana",
+  "comuna": "Santiago",
+  "indicaciones": "Dejar en conserjería",
+  "usuarioId": null,
+  "items": [
+    { "productoId": 1, "cantidad": 1 },
+    { "productoId": 11, "cantidad": 2 }
+  ]
+}
+```
+
+Variantes para la demostración:
+- Pago rechazado: cambiar el correo a `"ana.error@gmail.com"` → `estado: "RECHAZADA"` y el stock no cambia.
+- Sin stock: `{ "productoId": 5, "cantidad": 50 }` → 409.
+- Producto inexistente: `{ "productoId": 999, "cantidad": 1 }` → 404.
+- Datos inválidos: `"correo": "no-es-correo"` o `"cantidad": 0` → 400 con el detalle en `campos`.
+- Después de una compra pagada: `GET /api/v1/productos/1` muestra el stock descontado.
+
+### 10.7 Respuesta y datos del usuario
+- Se devuelve la entidad `Boleta` con `detalles` y el `producto` de cada detalle.
+- `DetalleBoleta.boleta` tiene `@JsonIgnore` para evitar el ciclo boleta → detalle → boleta.
+- La contraseña nunca aparece: `Usuario.password` tiene `@JsonProperty(access = WRITE_ONLY)`.
+- `detalles` es `@OneToMany`, que por defecto es **LAZY** (se carga cuando se usa). Se puede convertir a JSON
+  en el controller porque Spring Boot deja `spring.jpa.open-in-view` activado por defecto (aparece un aviso
+  en el log al arrancar), lo que mantiene abierta la conexión hasta enviar la respuesta.
+
+### 10.8 Preguntas posibles de la defensa
+- **¿Por qué se guarda `precioUnitario` en el detalle?** Si después cambia el precio del producto,
+  la boleta debe seguir mostrando lo que realmente se cobró.
+- **¿Qué pasa si dos compras llegan al mismo tiempo?** Podrían calcular el mismo correlativo. Como
+  `numero_orden` es `UNIQUE`, MySQL rechaza la segunda y `GlobalExceptionHandler` responde 409; no se
+  corrompen datos. Una mejora sería reintentar o usar una tabla de secuencias.
+- **¿Por qué el stock se revisa también si el pago se rechaza?** Primero se valida la orden completa y
+  después se simula el pago; una orden imposible de despachar no debería llegar al pago.
+
+---
+
+## 11. Ejemplos de modificaciones que podría pedir el profesor
 
 ### Agregar un campo a una entidad (ej: `marca` en Producto)
 1. En `Producto.java`:
@@ -344,9 +452,27 @@ Actualizar la prueba `eliminar_conProductos_lanzaConflictoYNoElimina`.
 ### Cambiar el formato o el mensaje de los errores
 Todo está en `GlobalExceptionHandler` (mensajes) y `ErrorResponse` (campos del JSON).
 
+### Cambiar el porcentaje del descuento Duoc (ej: 15%)
+En `BoletaService`: `PORCENTAJE_DESCUENTO_DUOC = 0.15`. Actualizar los valores esperados en
+`crear_usuarioDuoc_aplica20PorCientoYCalculaNetoEIva` (y el nombre de la prueba).
+
+### Agregar costo de despacho a la boleta (ej: $3.990 fijo)
+1. `Boleta`: `@Column(nullable = false) private Integer despacho = 0;`
+2. `BoletaService.crear`: `int total = subtotal - descuento + DESPACHO;` y `boleta.setDespacho(DESPACHO);`
+3. El neto y el IVA se siguen calculando desde `total`, sin cambios.
+
+### Agregar un estado nuevo (ej: `ANULADA`) con un endpoint para anular
+1. `EstadoBoleta`: agregar `ANULADA`.
+2. `BoletaService.anular(id)`: buscar la boleta; si ya está anulada → `ConflictoException`; si estaba
+   `PAGADA`, devolver el stock (`producto.setStock(stock + cantidad)`); cambiar el estado y guardar.
+3. `BoletaController`: `@PatchMapping("/{id}/anular")` con `@Operation`.
+
+### Cambiar la regla del pago simulado
+Está en `BoletaService.simularPago(correo)`. Ej: rechazar también si el total supera $2.000.000.
+
 ---
 
-## 11. Comprobación del arranque
+## 12. Comprobación del arranque
 
 Al ejecutar `./mvnw spring-boot:run` (con `show-sql=true`) se ve en la consola:
 - Los `create table` de `categoria`, `producto`, `usuario`, `boleta` y `detalle_boleta`.
