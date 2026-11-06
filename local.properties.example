@@ -1,0 +1,2 @@
+# Copia este archivo con el nombre local.properties y escribe tu contraseña de MySQL.
+DB_PASSWORD=tu_clave_de_mysql
