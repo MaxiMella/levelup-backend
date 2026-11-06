@@ -18,13 +18,26 @@ Se irá completando a medida que se agreguen services, controllers, seguridad y 
 5. Cuando el contexto termina de cargar, `DataInitializer` (un `CommandLineRunner`) inserta
    6 categorías y 15 productos, pero solo si la tabla `categoria` está vacía.
 6. `CorsConfig` permite que el frontend React (`http://localhost:5173`) llame a `/api/**`.
+7. `OpenApiConfig` + springdoc generan la documentación en Swagger UI:
+   `http://localhost:8080/swagger-ui/index.html`.
 
-Flujo general de una petición (cuando existan controllers y services):
+Flujo general de una petición:
 
 ```
 Frontend React → Controller (/api/v1/...) → Service (lógica y validaciones)
               → Repository (JpaRepository) → Hibernate → MySQL
+
+Si algo falla en cualquier capa → se lanza una excepción → GlobalExceptionHandler → JSON de error
 ```
+
+Ejemplo completo, `POST /api/v1/productos`:
+1. `ProductoController.crear` recibe el JSON y lo convierte en `ProductoRequest`.
+2. `@Valid` revisa las anotaciones del DTO (`@NotBlank`, `@Positive`...). Si algo falla, responde 400
+   sin llegar al service.
+3. `ProductoService.crear` revisa las reglas de negocio (oferta < precio, la categoría existe)
+   y copia los datos del DTO a una entidad `Producto`.
+4. `ProductoRepository.save` → Hibernate hace el `INSERT INTO producto ...` en MySQL.
+5. El controller responde `201 Created` con el producto guardado (ya con su `id`).
 
 ---
 
@@ -117,9 +130,161 @@ Cada interfaz extiende `JpaRepository<Entidad, Long>`, que ya trae `findAll`, `f
 - **Con `@Query` (JPQL)**: cuando la condición compara dos columnas, como
   `findCriticos()` (`p.stock <= p.stockCritico`). En JPQL se usan nombres de clases y atributos, no de tablas.
 
+Consulta agregada para el filtro combinado de productos:
+`findByCategoriaIdAndNombreContainingIgnoreCase(categoriaId, texto)` → `WHERE categoria_id = ? AND LOWER(nombre) LIKE ?`.
+
 ---
 
-## 4. Ejemplos de modificaciones que podría pedir el profesor
+## 4. DTOs de entrada (`dto/`)
+
+`CategoriaRequest` y `ProductoRequest` son los datos que **envía** el frontend al crear o actualizar.
+Las respuestas devuelven directamente las entidades.
+
+¿Por qué no recibir la entidad directamente?
+- El cliente no debería poder mandar el `id` (lo genera MySQL).
+- En el producto, el frontend envía solo `categoriaId` (un número) y no la categoría completa.
+- Las anotaciones de validación quedan en una clase pensada para la entrada de datos.
+
+| Anotación | Regla | Ejemplo |
+|---|---|---|
+| `@NotBlank` | No null, no vacío, no solo espacios | `nombre` |
+| `@NotNull` | Obligatorio | `precio`, `stock`, `categoriaId` |
+| `@Positive` | Mayor a 0 | `precio`, `precioOferta` |
+| `@PositiveOrZero` | Mayor o igual a 0 | `stock`, `stockCritico` |
+| `@Size(max = n)` | Largo máximo (igual al `length` de la columna) | `nombre`, `descripcion` |
+
+Las anotaciones solo se revisan cuando el controller pone `@Valid` antes de `@RequestBody`.
+`precioOferta < precio` compara dos campos, así que esa regla se revisa en `ProductoService`.
+
+---
+
+## 5. Services (`service/`)
+
+Contienen la lógica de negocio. Reciben los repositorios por **constructor** (inyección de dependencias).
+
+**CategoriaService**
+| Método | Qué hace | Error posible |
+|---|---|---|
+| `listarTodas()` / `listarActivas()` | `findAll()` / `findByActivaTrue()` | – |
+| `obtenerPorId(id)` | `findById(id)` | 404 si no existe |
+| `crear(request)` | Revisa que el nombre no exista (`existsByNombreIgnoreCase`) y guarda | 409 nombre repetido |
+| `actualizar(id, request)` | Busca otra categoría con ese nombre (`findByNombreIgnoreCase`); solo es conflicto si su `id` es distinto | 404, 409 |
+| `eliminar(id)` | Cuenta los productos de la categoría (`countByCategoriaId`) | 404, 409 si tiene productos |
+
+**ProductoService**
+| Método | Qué hace | Error posible |
+|---|---|---|
+| `listar(categoriaId, buscar)` | Elige la consulta según los filtros que vengan (ninguno, uno o ambos) | – |
+| `obtenerPorId(id)` | `findById(id)` | 404 |
+| `listarOfertas()` / `listarCriticos()` | `findEnOferta()` / `findCriticos()` | – |
+| `crear(request)` | Valida la oferta, busca la categoría, copia los datos y guarda | 400 oferta, 404 categoría |
+| `actualizar(id, request)` | Igual que crear, pero sobre el producto existente | 400, 404 |
+| `eliminar(id)` | Revisa si el producto está en alguna boleta (`existsByProductoId`) | 404, 409 si ya se vendió |
+
+¿Por qué no se puede eliminar un producto vendido? `detalle_boleta.producto_id` es una clave foránea:
+borrarlo dejaría boletas apuntando a un producto que no existe y se perdería el historial de ventas.
+Lo mismo pasa con `producto.categoria_id` al eliminar una categoría con productos.
+
+---
+
+## 6. Controllers y endpoints (`controller/`)
+
+El controller **solo** recibe la petición, llama al service y elige el código HTTP. No tiene `try/catch`:
+los errores los responde `GlobalExceptionHandler`.
+
+| Método | Ruta | OK | Errores |
+|---|---|---|---|
+| GET | `/api/v1/categorias` | 200 | – |
+| GET | `/api/v1/categorias/activas` | 200 | – |
+| GET | `/api/v1/categorias/{id}` | 200 | 404 |
+| POST | `/api/v1/categorias` | 201 | 400, 409 |
+| PUT | `/api/v1/categorias/{id}` | 200 | 400, 404, 409 |
+| DELETE | `/api/v1/categorias/{id}` | 204 | 404, 409 |
+| GET | `/api/v1/productos?categoriaId=&buscar=` | 200 | – |
+| GET | `/api/v1/productos/{id}` | 200 | 404 |
+| GET | `/api/v1/productos/ofertas` | 200 | – |
+| GET | `/api/v1/productos/criticos` | 200 | – |
+| POST | `/api/v1/productos` | 201 | 400, 404 (categoría) |
+| PUT | `/api/v1/productos/{id}` | 200 | 400, 404 |
+| DELETE | `/api/v1/productos/{id}` | 204 | 404, 409 |
+
+Anotaciones clave:
+- `@RestController` + `@RequestMapping("/api/v1/...")`: clase que responde JSON en esa ruta base.
+- `@GetMapping`, `@PostMapping`, `@PutMapping`, `@DeleteMapping`: método HTTP de cada endpoint.
+- `@PathVariable Long id`: toma el `{id}` de la URL.
+- `@RequestParam(required = false)`: parámetro opcional después del `?`.
+- `@Valid @RequestBody`: convierte el JSON al DTO y lo valida.
+- `ResponseEntity.status(HttpStatus.CREATED).body(...)` → 201; `ResponseEntity.noContent().build()` → 204.
+- `/ofertas` y `/criticos` no chocan con `/{id}` porque Spring prioriza la ruta fija sobre la variable.
+
+---
+
+## 7. Manejo de errores (`exception/`)
+
+Los services lanzan excepciones propias y `GlobalExceptionHandler` (`@RestControllerAdvice`) las
+atrapa y responde siempre con el mismo JSON (`ErrorResponse`):
+
+```json
+{ "status": 409, "error": "Conflict",
+  "mensaje": "Ya existe una categoría con el nombre 'Consolas'",
+  "fecha": "2026-11-06T15:23:25.72" }
+```
+
+En errores de `@Valid` se agrega `campos`, con el problema de cada campo:
+
+```json
+{ "status": 400, "error": "Bad Request", "mensaje": "Hay campos con datos inválidos",
+  "fecha": "...", "campos": { "precio": "El precio debe ser mayor a 0",
+                              "categoriaId": "La categoría es obligatoria" } }
+```
+
+| Excepción | Quién la lanza | HTTP |
+|---|---|---|
+| `RecursoNoEncontradoException` | Services (id que no existe) | 404 |
+| `ConflictoException` | Services (nombre repetido, categoría con productos, producto vendido) | 409 |
+| `DatosInvalidosException` | Services (oferta >= precio) | 400 |
+| `MethodArgumentNotValidException` | Spring, cuando falla `@Valid` | 400 + `campos` |
+| `HttpMessageNotReadableException` | Spring, JSON mal escrito | 400 |
+| `MethodArgumentTypeMismatchException` | Spring, ej: `/productos/abc` | 400 |
+| `NoResourceFoundException` | Spring, ruta que no existe | 404 |
+| `HttpRequestMethodNotSupportedException` | Spring, ej: PATCH donde no existe | 405 |
+| `DataIntegrityViolationException` | MySQL rechaza por UNIQUE o clave foránea (respaldo) | 409 |
+| `Exception` (cualquier otra) | Error inesperado: se registra en consola y al cliente se le envía un mensaje genérico | 500 |
+
+Las excepciones propias extienden `RuntimeException`, así no hay que declarar `throws` en cada método.
+
+---
+
+## 8. Swagger / OpenAPI
+
+- Dependencia `springdoc-openapi-starter-webmvc-ui` (versión 3.2.0 en `pom.xml`, la línea 3.x es la de Spring Boot 4).
+- `OpenApiConfig` define el título, la versión y la descripción.
+- En los controllers: `@Tag` agrupa los endpoints (Categorías, Productos) y `@Operation` describe cada uno.
+  `@Parameter` describe los filtros `categoriaId` y `buscar`.
+- Swagger UI: `http://localhost:8080/swagger-ui/index.html` (se puede probar cada endpoint con "Try it out").
+- JSON OpenAPI: `http://localhost:8080/v3/api-docs`.
+
+---
+
+## 9. Pruebas unitarias (`src/test/.../service/`)
+
+`CategoriaServiceTest` (11 pruebas) y `ProductoServiceTest` (14 pruebas) usan **JUnit 5 + Mockito**:
+
+- `@ExtendWith(MockitoExtension.class)`: activa Mockito en la clase de prueba.
+- `@Mock`: crea un repositorio falso; **no se usa MySQL**.
+- `@InjectMocks`: crea el service real y le pasa los mocks por el constructor.
+- `when(repo.metodo(...)).thenReturn(...)`: decide qué devuelve el mock.
+- `assertEquals`, `assertThrows`: comprueban el resultado o que se lance la excepción esperada.
+- `verify(repo).save(...)` / `verify(repo, never()).save(...)`: comprueban si se llamó (o no) a un método.
+
+Patrón de cada prueba: **preparar** (`when`) → **ejecutar** (llamar al service) → **comprobar** (`assert`/`verify`).
+
+Se ejecutan con `./mvnw test`. `LevelupBackendApplicationTests` levanta la aplicación completa,
+por eso sí necesita MySQL encendido.
+
+---
+
+## 10. Ejemplos de modificaciones que podría pedir el profesor
 
 ### Agregar un campo a una entidad (ej: `marca` en Producto)
 1. En `Producto.java`:
@@ -147,9 +312,41 @@ existentes no se ven afectados.
 ### Cambiar la regla de stock crítico
 Modificar la consulta `@Query` de `findCriticos()` en `ProductoRepository`.
 
+### Agregar un campo al mantenedor de productos (ej: `marca`)
+Además del cambio en la entidad (ver arriba):
+1. `ProductoRequest`: agregar `@Size(max = 60) private String marca;`.
+2. `ProductoService.copiarDatos`: agregar `producto.setMarca(request.getMarca());`.
+Si se olvida el paso 2, el campo llega al backend pero nunca se guarda.
+
+### Crear un endpoint nuevo (ej: productos sin stock, `GET /api/v1/productos/agotados`)
+1. Repository: `List<Producto> findByStock(Integer stock);`
+2. Service: `public List<Producto> listarAgotados() { return productoRepository.findByStock(0); }`
+3. Controller:
+   ```java
+   @GetMapping("/agotados")
+   @Operation(summary = "Listar productos agotados", description = "Productos con stock 0.")
+   public List<Producto> listarAgotados() {
+       return productoService.listarAgotados();
+   }
+   ```
+4. Prueba en `ProductoServiceTest` con `when(productoRepository.findByStock(0)).thenReturn(...)`.
+
+### Agregar una validación nueva (ej: precio máximo de $5.000.000)
+- Si revisa un solo campo: anotación en el DTO, ej: `@Max(value = 5000000, message = "...")` en `precio`.
+- Si compara varios campos o necesita la base de datos: en el service, lanzando
+  `DatosInvalidosException` (400) o `ConflictoException` (409).
+
+### Permitir eliminar una categoría con productos dejándola inactiva
+En `CategoriaService.eliminar`, en lugar de lanzar `ConflictoException`:
+`categoria.setActiva(false); categoriaRepository.save(categoria);` (eliminación lógica).
+Actualizar la prueba `eliminar_conProductos_lanzaConflictoYNoElimina`.
+
+### Cambiar el formato o el mensaje de los errores
+Todo está en `GlobalExceptionHandler` (mensajes) y `ErrorResponse` (campos del JSON).
+
 ---
 
-## 5. Comprobación del arranque
+## 11. Comprobación del arranque
 
 Al ejecutar `./mvnw spring-boot:run` (con `show-sql=true`) se ve en la consola:
 - Los `create table` de `categoria`, `producto`, `usuario`, `boleta` y `detalle_boleta`.

@@ -14,6 +14,9 @@ public interface ProductoRepository extends JpaRepository<Producto, Long> {
 
     List<Producto> findByNombreContainingIgnoreCase(String texto);
 
+    /** Filtro combinado: productos de una categoría cuyo nombre contiene el texto buscado. */
+    List<Producto> findByCategoriaIdAndNombreContainingIgnoreCase(Long categoriaId, String texto);
+
     /** Productos con stock igual o menor a su stock crítico (listado del administrador). */
     @Query("SELECT p FROM Producto p WHERE p.stock <= p.stockCritico")
     List<Producto> findCriticos();
