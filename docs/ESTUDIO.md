@@ -27,6 +27,7 @@ Se irá completando a medida que se agreguen services, controllers, seguridad y 
 7. `OpenApiConfig` + springdoc generan la documentación en Swagger UI:
    `http://localhost:8080/swagger-ui/index.html`.
 8. `security/SecurityConfig` decide qué rol puede usar cada ruta y agrega el filtro JWT (sección 14).
+   El dashboard y los reportes del panel están en la sección 15.
 
 Flujo general de una petición:
 
@@ -141,6 +142,10 @@ Cada interfaz extiende `JpaRepository<Entidad, Long>`, que ya trae `findAll`, `f
 Consulta agregada para el filtro combinado de productos:
 `findByCategoriaIdAndNombreContainingIgnoreCase(categoriaId, texto)` → `WHERE categoria_id = ? AND LOWER(nombre) LIKE ?`.
 
+Consultas para los reportes (`BoletaRepository`, sección 15):
+- `countByEstado(EstadoBoleta.RECHAZADA)` → `SELECT COUNT(*) FROM boleta WHERE estado = 'RECHAZADA'`.
+- `findTop5ByOrderByFechaDesc()` → `ORDER BY fecha DESC LIMIT 5`: `Top5` limita la cantidad de resultados.
+
 ---
 
 ## 4. DTOs de entrada (`dto/`)
@@ -149,6 +154,8 @@ Consulta agregada para el filtro combinado de productos:
 `UsuarioRequest`, `LoginRequest` y `PerfilRequest` son los datos que **envía** el frontend al crear o actualizar.
 Las respuestas devuelven directamente las entidades, **excepto en usuarios**, que responden `UsuarioResponse`
 (sin contraseña), y en el login, que responde `LoginResponse` (token + `UsuarioResponse`).
+Los reportes responden DTOs propios (`DashboardResponse`, `ReporteVentasResponse`, `VentaCategoriaResponse`,
+`ProductoVendidoResponse`), porque son datos calculados que no existen como tabla (sección 15).
 
 ¿Por qué no recibir la entidad directamente?
 - El cliente no debería poder mandar el `id` (lo genera MySQL).
@@ -289,7 +296,7 @@ Los 401 (sin token) y 403 (rol sin permiso) de las reglas de `SecurityConfig` **
 ## 9. Pruebas unitarias (`src/test/.../service/`)
 
 `CategoriaServiceTest` (11 pruebas), `ProductoServiceTest` (14), `BoletaServiceTest` (19),
-`UsuarioServiceTest` (18) y `AuthServiceTest` (3) usan **JUnit 5 + Mockito**:
+`UsuarioServiceTest` (18), `AuthServiceTest` (3) y `ReporteServiceTest` (8) usan **JUnit 5 + Mockito**:
 
 - `@ExtendWith(MockitoExtension.class)`: activa Mockito en la clase de prueba.
 - `@Mock`: crea un repositorio falso; **no se usa MySQL**.
@@ -309,7 +316,7 @@ Se ejecutan con `./mvnw test`. `LevelupBackendApplicationTests` levanta la aplic
 por eso sí necesita MySQL encendido (y `JWT_SECRET` en `local.properties`).
 
 Pruebas de seguridad (sección 14.8): `JwtServiceTest` (6, sin Spring ni Mockito) y `SeguridadTest`
-(23, MockMvc, sin MySQL). En total: **95 pruebas**.
+(27, MockMvc, sin MySQL). En total: **107 pruebas**.
 
 ---
 
@@ -696,6 +703,25 @@ nunca poner la contraseña ni datos sensibles.
 `SecurityConfig`: cambiar `.requestMatchers(HttpMethod.POST, "/api/v1/boletas").permitAll()` por
 `.hasRole("CLIENTE")` (o `.authenticated()`), y actualizar la prueba `visitante_puedeComprarSinCuenta`.
 
+### Cambiar el ranking a Top 10
+`ReporteService.TOP_PRODUCTOS = 10`. Actualizar la prueba `obtenerReporteVentas_ranking_...` (hoy espera 5).
+
+### Que el VENDEDOR también vea los reportes
+`SecurityConfig`: `.requestMatchers("/api/v1/reportes/**").hasAnyRole("ADMIN", "VENDEDOR")`, actualizar
+`vendedor_noPuedeVerReportes` y el "**Acceso:**" de los `@Operation` de `ReporteController`.
+
+### Agregar una métrica al reporte (ej: cantidad de clientes que compraron)
+1. `ReporteVentasResponse`: `private long clientesCompradores;`
+2. `ReporteService.obtenerReporteVentas`: recorrer `pagadas`, guardar en un `Set<Long>` el `boleta.getUsuario().getId()`
+   de las que tienen usuario (las de visitantes tienen `usuario = null`) y hacer `reporte.setClientesCompradores(set.size())`.
+3. Una prueba en `ReporteServiceTest`.
+
+### Reporte de ventas entre dos fechas (ej: `?desde=2026-11-01&hasta=2026-11-30`)
+1. `BoletaRepository`: `List<Boleta> findByEstadoAndFechaBetween(EstadoBoleta estado, LocalDateTime desde, LocalDateTime hasta);`
+2. `ReporteService.obtenerReporteVentas(LocalDate desde, LocalDate hasta)`: usar esa consulta con
+   `desde.atStartOfDay()` y `hasta.atTime(23, 59, 59)` en vez de `findByEstado`.
+3. `ReporteController.ventas`: `@RequestParam LocalDate desde, @RequestParam LocalDate hasta` (formato `yyyy-MM-dd`).
+
 ---
 
 ## 13. Comprobación del arranque
@@ -749,6 +775,7 @@ y las excepciones `CredencialesInvalidasException` (401) y `AccesoDenegadoExcept
 | `GET /boletas/usuario/{id}` | 401 | solo el suyo (otro → 403) | 403 | ✅ |
 | `GET /boletas/mis-compras` | 401 | ✅ | 403 | ✅ |
 | `/usuarios/**` (mantenedor) | 401 | 403 | 403 | ✅ |
+| `GET /reportes/dashboard`, `GET /reportes/ventas` | 401 | 403 | 403 | ✅ |
 
 (Todas las rutas empiezan con `/api/v1`.)
 
@@ -867,7 +894,7 @@ y `GET /api/v1/boletas/mis-compras` → 200.
   texto que no es token. También, que una clave de menos de 32 caracteres impida arrancar.
 - `AuthServiceTest` (3, Mockito): login correcto (token + `"Bearer"` + usuario), contraseña incorrecta y correo
   inexistente (mismo mensaje en los dos casos, y no se genera token).
-- `SeguridadTest` (23, MockMvc): `@WebMvcTest` carga solo la capa web + nuestra seguridad (`@Import`), con los
+- `SeguridadTest` (27, MockMvc; 4 son de los reportes): `@WebMvcTest` carga solo la capa web + nuestra seguridad (`@Import`), con los
   services como `@MockitoBean`. Por eso **no necesita MySQL**: prueba quién puede entrar a cada ruta, no la lógica.
   - `@WithMockUser(username = "...", roles = "VENDEDOR")` simula una sesión sin token.
   - Las pruebas "con token real" generan un JWT con `JwtService` y lo envían en el header: prueban el camino
@@ -894,3 +921,85 @@ y `GET /api/v1/boletas/mis-compras` → 200.
 - **¿Diferencia entre 401 y 403?** 401 = no sé quién eres (sin token o token malo). 403 = sé quién eres, pero
   tu rol no puede hacer eso.
 - **¿Por qué no hay CSRF?** Ver 14.3: no hay cookies de sesión.
+
+---
+
+## 15. Dashboard y reportes del panel de administración
+
+Reemplazan los cálculos que hacía el frontend en `AdminDashboard.jsx` y `AdminReportes.jsx`, con las mismas reglas.
+Archivos: `ReporteController` → `ReporteService` → `BoletaRepository`, `ProductoRepository`, `UsuarioRepository` → MySQL.
+Permisos: **solo ADMIN** (`.requestMatchers("/api/v1/reportes/**").hasRole("ADMIN")` en `SecurityConfig`).
+Sin esa regla, `anyRequest().authenticated()` dejaría entrar a cualquier usuario con sesión.
+
+**Regla principal: solo las boletas PAGADAS cuentan como ventas.** Por eso el service parte con
+`boletaRepository.findByEstado(EstadoBoleta.PAGADA)`. Las rechazadas solo aparecen en `ordenesRealizadas`
+(dashboard) y en `pagosRechazados` (reporte).
+
+### 15.1 Endpoints
+| Método | Ruta | Acceso | OK | Errores |
+|---|---|---|---|---|
+| GET | `/api/v1/reportes/dashboard` | solo ADMIN | 200 | 401, 403 |
+| GET | `/api/v1/reportes/ventas` | solo ADMIN | 200 | 401, 403 |
+
+### 15.2 Cómo se calcula cada métrica
+| Métrica | Frontend (antes) | `ReporteService` (ahora) |
+|---|---|---|
+| `ventasTotales` / `ingresosTotales` | suma de `total` de las pagadas | `sumarTotales(pagadas)` |
+| `ordenesRealizadas` | todas las órdenes | `boletaRepository.count()` |
+| `totalProductos`, `totalUsuarios` | largo de cada lista | `count()` de cada repositorio |
+| `productosCriticos` | `obtenerProductosCriticos()` | `productoRepository.findCriticos()` |
+| `ultimasOrdenes` | ordena por fecha y toma 5 | `findTop5ByOrderByFechaDesc()` |
+| `ordenesPagadas` | cantidad de pagadas | `pagadas.size()` |
+| `ticketPromedio` | `Math.round(total / n)`, 0 si n = 0 | `calcularTicketPromedio`: si no hay ventas devuelve 0 (no divide por cero) |
+| `unidadesVendidas` | suma de `cantidad` de los items | suma de `detalle.getCantidad()` |
+| `pagosRechazados` | todas − pagadas | `countByEstado(RECHAZADA)` |
+| `totalDescuentos` | suma de `descuento` | suma de `boleta.getDescuento()` de las pagadas |
+| `ventasPorCategoria` | `precio × cantidad` por categoría | `calcularVentasPorCategoria`: `Map<nombre categoría, monto>` y orden de mayor a menor |
+| `rankingProductos` | agrupa por producto, ordena por unidades y toma 5 | `calcularRankingProductos`: `Map<id producto, fila>`, orden y top 5 |
+
+Detalles para la defensa:
+- **Se calcula en Java recorriendo las listas**, como el `reduce` del frontend, en vez de `SUM`/`GROUP BY` con
+  `@Query`. Es más fácil de leer y se prueba con Mockito entregando boletas armadas a mano. Con miles de boletas
+  convendría hacer la suma en MySQL con `@Query`, para no traer todas las filas a Java.
+- **`LinkedHashMap`** agrupa: si la clave (categoría o producto) no existe se crea; si existe se suma.
+  Es un `HashMap` que además recuerda el orden en que se agregaron las claves.
+- **Orden descendente:** `lista.sort((a, b) -> Long.compare(b.getMonto(), a.getMonto()))`. Se compara `b` con `a`
+  (al revés) para que el mayor quede primero.
+- **Empates del ranking:** con las mismas unidades, va primero el que recaudó más (el frontend no definía un desempate).
+- **`ventasPorCategoria` y el ranking usan `detalle.subtotal`** (precio × cantidad, **antes** del descuento Duoc),
+  igual que el frontend. Por eso la suma de las categorías puede ser mayor que `ingresosTotales`, que sí descuenta.
+- **Montos en `long`:** las boletas guardan `Integer` (máximo ~2.147 millones). Una suma de muchas ventas podría
+  pasarse y dar un número negativo; `long` llega a ~9 trillones.
+- **`@Transactional(readOnly = true)`:** `boleta.getDetalles()` es LAZY (se carga al usarse). La transacción mantiene
+  la conexión abierta mientras se recorren los detalles. `readOnly` indica que solo se lee.
+- **`pagosRechazados` cuenta las `RECHAZADA`** en vez de "todas − pagadas": si después se agrega un estado (ej: `ANULADA`),
+  no se contaría como rechazo.
+- `productosCriticos` y `ultimasOrdenes` devuelven las entidades `Producto` y `Boleta`, igual que `/productos/criticos`
+  y `/boletas`, así el frontend reutiliza lo que ya muestra.
+
+### 15.3 Ejemplo de respuesta (`GET /api/v1/reportes/ventas`, con los datos de prueba)
+Dos boletas pagadas (una de visitante: PS5 + 2 audífonos = 599.970; otra de Pedro: Mousepad 14.990 − 20% = 11.992)
+y dos rechazadas:
+```json
+{ "ingresosTotales": 611962, "ordenesPagadas": 2, "ticketPromedio": 305981, "unidadesVendidas": 4,
+  "pagosRechazados": 2, "totalDescuentos": 2998,
+  "ventasPorCategoria": [ { "categoria": "Consolas", "monto": 499990 },
+                          { "categoria": "Periféricos", "monto": 99980 },
+                          { "categoria": "Accesorios", "monto": 14990 } ],
+  "rankingProductos": [ { "productoId": 11, "nombre": "Audífonos Gamer 7.1 Surround", "unidades": 2, "monto": 99980 },
+                        { "productoId": 1, "nombre": "PlayStation 5 Slim 1TB", "unidades": 1, "monto": 499990 },
+                        { "productoId": 14, "nombre": "Mousepad XXL Speed 900x400mm", "unidades": 1, "monto": 14990 } ] }
+```
+- Ticket: 611.962 / 2 = 305.981. Categorías: 614.960 en total, 2.998 más que los ingresos (el descuento de Pedro).
+- La PS5 y el Mousepad empatan en 1 unidad: gana la PS5 porque recaudó más.
+
+`GET /api/v1/reportes/dashboard` responde `{ "ventasTotales": 611962, "ordenesRealizadas": 4, "totalProductos": 15,
+"totalUsuarios": ..., "productosCriticos": [ ...Producto... ], "ultimasOrdenes": [ ...Boleta... ] }`.
+
+### 15.4 Pruebas
+- `ReporteServiceTest` (8, Mockito): dashboard con y sin ventas; reporte sin ventas (todo en 0 y ticket 0); las rechazadas
+  no cuentan; ingresos, descuentos, unidades y ticket redondeado (75.000,5 → 75.001); categorías agrupadas y
+  ordenadas; categoría con el subtotal antes del descuento; ranking (suma entre boletas, desempate por monto, solo 5).
+  En `rechazadasNoCuentanComoVentas`, `findAll()` se simula con `lenient()` devolviendo también la rechazada: si el
+  service la usara en vez de `findByEstado(PAGADA)`, la prueba fallaría.
+- `SeguridadTest`: ADMIN 200; VENDEDOR y CLIENTE 403; visitante 401.

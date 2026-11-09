@@ -75,6 +75,9 @@ public class SecurityConfig {
                         // ----- Usuarios (mantenedor) -----
                         .requestMatchers("/api/v1/usuarios/**").hasRole("ADMIN")
 
+                        // ----- Dashboard y reportes del panel -----
+                        .requestMatchers("/api/v1/reportes/**").hasRole("ADMIN")
+
                         // Cualquier otra ruta exige sesión.
                         .anyRequest().authenticated())
                 // El filtro JWT va antes del filtro estándar de usuario/contraseña de Spring Security.

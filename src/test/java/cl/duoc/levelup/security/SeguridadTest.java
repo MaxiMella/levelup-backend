@@ -2,9 +2,11 @@ package cl.duoc.levelup.security;
 
 import cl.duoc.levelup.config.CorsConfig;
 import cl.duoc.levelup.dto.BoletaRequest;
+import cl.duoc.levelup.dto.DashboardResponse;
 import cl.duoc.levelup.dto.LoginRequest;
 import cl.duoc.levelup.dto.LoginResponse;
 import cl.duoc.levelup.dto.ProductoRequest;
+import cl.duoc.levelup.dto.ReporteVentasResponse;
 import cl.duoc.levelup.dto.UsuarioResponse;
 import cl.duoc.levelup.exception.AccesoDenegadoException;
 import cl.duoc.levelup.exception.CredencialesInvalidasException;
@@ -17,6 +19,7 @@ import cl.duoc.levelup.service.AuthService;
 import cl.duoc.levelup.service.BoletaService;
 import cl.duoc.levelup.service.CategoriaService;
 import cl.duoc.levelup.service.ProductoService;
+import cl.duoc.levelup.service.ReporteService;
 import cl.duoc.levelup.service.UsuarioService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -81,6 +84,9 @@ class SeguridadTest {
 
     @MockitoBean
     private AuthService authService;
+
+    @MockitoBean
+    private ReporteService reporteService;
 
     /** Lo usa UsuarioDetailsService (real) para cargar al usuario del token. */
     @MockitoBean
@@ -258,6 +264,44 @@ class SeguridadTest {
         mockMvc.perform(get("/api/v1/usuarios")).andExpect(status().isOk());
         mockMvc.perform(get("/api/v1/boletas/usuario/3")).andExpect(status().isOk());
         mockMvc.perform(get("/api/v1/boletas/mis-compras")).andExpect(status().isOk());
+    }
+
+    // ===================== Reportes (solo ADMIN) =====================
+
+    @Test
+    @WithMockUser(username = "admin@levelup.cl", roles = "ADMIN")
+    void admin_puedeVerDashboardYReporteDeVentas() throws Exception {
+        DashboardResponse dashboard = new DashboardResponse();
+        dashboard.setVentasTotales(523982);
+        when(reporteService.obtenerDashboard()).thenReturn(dashboard);
+        when(reporteService.obtenerReporteVentas()).thenReturn(new ReporteVentasResponse());
+
+        mockMvc.perform(get("/api/v1/reportes/dashboard"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.ventasTotales").value(523982));
+        mockMvc.perform(get("/api/v1/reportes/ventas")).andExpect(status().isOk());
+    }
+
+    @Test
+    @WithMockUser(username = "vendedor@levelup.cl", roles = "VENDEDOR")
+    void vendedor_noPuedeVerReportes() throws Exception {
+        mockMvc.perform(get("/api/v1/reportes/dashboard")).andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/v1/reportes/ventas"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.mensaje").value("No tienes permiso para realizar esta acción"));
+    }
+
+    @Test
+    @WithMockUser(username = "pedro@duocuc.cl", roles = "CLIENTE")
+    void cliente_noPuedeVerReportes() throws Exception {
+        mockMvc.perform(get("/api/v1/reportes/dashboard")).andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/v1/reportes/ventas")).andExpect(status().isForbidden());
+    }
+
+    @Test
+    void visitante_noPuedeVerReportes() throws Exception {
+        mockMvc.perform(get("/api/v1/reportes/dashboard")).andExpect(status().isUnauthorized());
+        mockMvc.perform(get("/api/v1/reportes/ventas")).andExpect(status().isUnauthorized());
     }
 
     // ===================== Con token real (filtro JWT) =====================

@@ -18,6 +18,12 @@ public interface BoletaRepository extends JpaRepository<Boleta, Long> {
     /** Solo las pagadas cuentan como ventas en el dashboard y los reportes. */
     List<Boleta> findByEstado(EstadoBoleta estado);
 
+    /** Cantidad de boletas en un estado, ej: pagos rechazados en el reporte de ventas. */
+    long countByEstado(EstadoBoleta estado);
+
+    /** Las 5 boletas más recientes (dashboard). "Top5" limita el resultado: SELECT ... ORDER BY fecha DESC LIMIT 5. */
+    List<Boleta> findTop5ByOrderByFechaDesc();
+
     Optional<Boleta> findByNumeroOrden(String numeroOrden);
 
     /** Para generar el correlativo del número de orden del día, ej: 20261102-003. */
