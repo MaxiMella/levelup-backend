@@ -1,10 +1,12 @@
 package cl.duoc.levelup.controller;
 
+import cl.duoc.levelup.config.OpenApiConfig;
 import cl.duoc.levelup.dto.ProductoRequest;
 import cl.duoc.levelup.model.Producto;
 import cl.duoc.levelup.service.ProductoService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -25,6 +27,8 @@ import java.util.List;
  * Endpoints REST de productos: /api/v1/productos.
  * El controller solo recibe la petición, llama al service y elige el código HTTP.
  * Las validaciones de negocio están en ProductoService y los errores los responde GlobalExceptionHandler.
+ * Permisos (SecurityConfig): los GET son públicos, salvo /criticos (ADMIN y VENDEDOR);
+ * crear, editar y eliminar son solo para ADMIN. @SecurityRequirement muestra el candado en Swagger.
  */
 @RestController
 @RequestMapping("/api/v1/productos")
@@ -39,7 +43,7 @@ public class ProductoController {
 
     @GetMapping
     @Operation(summary = "Listar productos",
-            description = "Devuelve los productos. Se puede filtrar por categoría (?categoriaId=1), "
+            description = "**Acceso: público.** Devuelve los productos. Se puede filtrar por categoría (?categoriaId=1), "
                     + "buscar por nombre (?buscar=mouse) o combinar ambos filtros.")
     public List<Producto> listar(
             @Parameter(description = "Id de la categoría para filtrar (opcional)")
@@ -52,28 +56,30 @@ public class ProductoController {
     // Las rutas fijas (/ofertas, /criticos) no chocan con /{id}: Spring prioriza la ruta más específica.
     @GetMapping("/ofertas")
     @Operation(summary = "Listar productos en oferta",
-            description = "Devuelve los productos que tienen un precio de oferta menor a su precio normal.")
+            description = "**Acceso: público.** Devuelve los productos que tienen un precio de oferta menor a su precio normal.")
     public List<Producto> listarOfertas() {
         return productoService.listarOfertas();
     }
 
     @GetMapping("/criticos")
+    @SecurityRequirement(name = OpenApiConfig.ESQUEMA_JWT)
     @Operation(summary = "Listar productos con stock crítico",
-            description = "Devuelve los productos cuyo stock es igual o menor a su stock crítico.")
+            description = "**Acceso: ADMIN y VENDEDOR.** Devuelve los productos cuyo stock es igual o menor a su stock crítico.")
     public List<Producto> listarCriticos() {
         return productoService.listarCriticos();
     }
 
     @GetMapping("/{id}")
     @Operation(summary = "Obtener un producto por id",
-            description = "Devuelve el producto indicado con su categoría. Responde 404 si no existe.")
+            description = "**Acceso: público.** Devuelve el producto indicado con su categoría. Responde 404 si no existe.")
     public Producto obtenerPorId(@PathVariable Long id) {
         return productoService.obtenerPorId(id);
     }
 
     @PostMapping
+    @SecurityRequirement(name = OpenApiConfig.ESQUEMA_JWT)
     @Operation(summary = "Crear un producto",
-            description = "Crea un producto y responde 201. Responde 400 si los datos no son válidos "
+            description = "**Acceso: solo ADMIN.** Crea un producto y responde 201. Responde 400 si los datos no son válidos "
                     + "(precio > 0, stock y stock crítico >= 0, oferta menor al precio) "
                     + "y 404 si la categoría no existe.")
     public ResponseEntity<Producto> crear(@Valid @RequestBody ProductoRequest request) {
@@ -82,16 +88,18 @@ public class ProductoController {
     }
 
     @PutMapping("/{id}")
+    @SecurityRequirement(name = OpenApiConfig.ESQUEMA_JWT)
     @Operation(summary = "Actualizar un producto",
-            description = "Reemplaza los datos del producto. Responde 400 si los datos no son válidos "
+            description = "**Acceso: solo ADMIN.** Reemplaza los datos del producto. Responde 400 si los datos no son válidos "
                     + "y 404 si el producto o la categoría no existen.")
     public Producto actualizar(@PathVariable Long id, @Valid @RequestBody ProductoRequest request) {
         return productoService.actualizar(id, request);
     }
 
     @DeleteMapping("/{id}")
+    @SecurityRequirement(name = OpenApiConfig.ESQUEMA_JWT)
     @Operation(summary = "Eliminar un producto",
-            description = "Elimina el producto y responde 204 sin contenido. Responde 404 si no existe "
+            description = "**Acceso: solo ADMIN.** Elimina el producto y responde 204 sin contenido. Responde 404 si no existe "
                     + "y 409 si el producto ya aparece en una boleta.")
     public ResponseEntity<Void> eliminar(@PathVariable Long id) {
         productoService.eliminar(id);

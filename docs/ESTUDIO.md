@@ -9,9 +9,11 @@ Se irá completando a medida que se agreguen services, controllers, seguridad y 
 
 1. `LevelupBackendApplication` (con `@SpringBootApplication`) inicia Spring Boot.
 2. Spring lee `src/main/resources/application.properties`, que importa `local.properties`
-   (con `spring.config.import`). Ahí está `DB_PASSWORD`, la contraseña de MySQL de cada integrante.
+   (con `spring.config.import`). Ahí están `DB_PASSWORD` (la contraseña de MySQL de cada integrante) y
+   `JWT_SECRET` (la clave para firmar los tokens, mínimo 32 caracteres).
    `local.properties` está en `.gitignore`, así que nunca se sube a GitHub
-   (`local.properties.example` muestra el formato).
+   (`local.properties.example` muestra el formato). Si falta `JWT_SECRET`, la app no arranca y
+   `JwtService` explica qué hacer.
 3. Con `createDatabaseIfNotExist=true` en la URL, MySQL crea la base `levelup_db` si no existe.
 4. Con `spring.jpa.hibernate.ddl-auto=update`, Hibernate revisa las clases `@Entity` del paquete
    `model` y crea (o actualiza) las tablas. No borra datos.
@@ -21,15 +23,18 @@ Se irá completando a medida que se agreguen services, controllers, seguridad y 
    - `cargarUsuarios()`: 3 usuarios de prueba con contraseña cifrada, solo si la tabla `usuario` está vacía
      (ver sección 11).
 6. `CorsConfig` permite que el frontend React (`http://localhost:5173`) llame a `/api/**`.
+   Lo aplica Spring Security con `http.cors()` (ver sección 14).
 7. `OpenApiConfig` + springdoc generan la documentación en Swagger UI:
    `http://localhost:8080/swagger-ui/index.html`.
+8. `security/SecurityConfig` decide qué rol puede usar cada ruta y agrega el filtro JWT (sección 14).
 
 Flujo general de una petición:
 
 ```
-Frontend React → Controller (/api/v1/...) → Service (lógica y validaciones)
-              → Repository (JpaRepository) → Hibernate → MySQL
+Frontend React → Spring Security (filtro JWT + reglas por rol) → Controller (/api/v1/...)
+              → Service (lógica y validaciones) → Repository (JpaRepository) → Hibernate → MySQL
 
+Sin permiso → Spring Security responde 401/403 (SeguridadErrorHandler) sin llegar al controller
 Si algo falla en cualquier capa → se lanza una excepción → GlobalExceptionHandler → JSON de error
 ```
 
@@ -140,9 +145,10 @@ Consulta agregada para el filtro combinado de productos:
 
 ## 4. DTOs de entrada (`dto/`)
 
-`CategoriaRequest`, `ProductoRequest`, `BoletaRequest` (con su lista de `DetalleRequest`), `RegistroRequest`
-y `UsuarioRequest` son los datos que **envía** el frontend al crear o actualizar. Las respuestas devuelven
-directamente las entidades, **excepto en usuarios**, que responden `UsuarioResponse` (sin contraseña).
+`CategoriaRequest`, `ProductoRequest`, `BoletaRequest` (con su lista de `DetalleRequest`), `RegistroRequest`,
+`UsuarioRequest`, `LoginRequest` y `PerfilRequest` son los datos que **envía** el frontend al crear o actualizar.
+Las respuestas devuelven directamente las entidades, **excepto en usuarios**, que responden `UsuarioResponse`
+(sin contraseña), y en el login, que responde `LoginResponse` (token + `UsuarioResponse`).
 
 ¿Por qué no recibir la entidad directamente?
 - El cliente no debería poder mandar el `id` (lo genera MySQL).
@@ -194,7 +200,7 @@ Lo mismo pasa con `producto.categoria_id` al eliminar una categoría con product
 ## 6. Controllers y endpoints (`controller/`)
 
 El controller **solo** recibe la petición, llama al service y elige el código HTTP. No tiene `try/catch`:
-los errores los responde `GlobalExceptionHandler`.
+los errores los responde `GlobalExceptionHandler`. Quién puede usar cada endpoint está en la sección 14.
 
 | Método | Ruta | OK | Errores |
 |---|---|---|---|
@@ -247,6 +253,8 @@ En errores de `@Valid` se agrega `campos`, con el problema de cada campo:
 | `RecursoNoEncontradoException` | Services (id que no existe) | 404 |
 | `ConflictoException` | Services (nombre repetido, categoría con productos, producto vendido) | 409 |
 | `DatosInvalidosException` | Services (oferta >= precio) | 400 |
+| `CredencialesInvalidasException` | `AuthService` (correo o contraseña incorrectos en el login) | 401 |
+| `AccesoDenegadoException` | `BoletaService` (un cliente pide el historial de otro) | 403 |
 | `MethodArgumentNotValidException` | Spring, cuando falla `@Valid` | 400 + `campos` |
 | `HttpMessageNotReadableException` | Spring, JSON mal escrito | 400 |
 | `MethodArgumentTypeMismatchException` | Spring, ej: `/productos/abc` | 400 |
@@ -257,6 +265,10 @@ En errores de `@Valid` se agrega `campos`, con el problema de cada campo:
 
 Las excepciones propias extienden `RuntimeException`, así no hay que declarar `throws` en cada método.
 
+Los 401 (sin token) y 403 (rol sin permiso) de las reglas de `SecurityConfig` **no pasan por
+`GlobalExceptionHandler`**: Spring Security rechaza la petición antes de llegar al controller. Por eso
+`security/SeguridadErrorHandler` escribe el mismo `ErrorResponse` a mano (ver sección 14.5).
+
 ---
 
 ## 8. Swagger / OpenAPI
@@ -265,6 +277,10 @@ Las excepciones propias extienden `RuntimeException`, así no hay que declarar `
 - `OpenApiConfig` define el título, la versión y la descripción.
 - En los controllers: `@Tag` agrupa los endpoints (Categorías, Productos) y `@Operation` describe cada uno.
   `@Parameter` describe los filtros `categoriaId` y `buscar`.
+- Cada `@Operation` empieza con **"Acceso: ..."** (público, ADMIN, ADMIN y VENDEDOR, etc.).
+- `OpenApiConfig` declara el esquema `bearerAuth` (HTTP bearer, formato JWT): eso agrega el botón **Authorize**.
+  Los endpoints con `@SecurityRequirement(name = OpenApiConfig.ESQUEMA_JWT)` muestran un candado y Swagger
+  les envía el token. Cómo usarlo: sección 14.7.
 - Swagger UI: `http://localhost:8080/swagger-ui/index.html` (se puede probar cada endpoint con "Try it out").
 - JSON OpenAPI: `http://localhost:8080/v3/api-docs`.
 
@@ -272,8 +288,8 @@ Las excepciones propias extienden `RuntimeException`, así no hay que declarar `
 
 ## 9. Pruebas unitarias (`src/test/.../service/`)
 
-`CategoriaServiceTest` (11 pruebas), `ProductoServiceTest` (14), `BoletaServiceTest` (12) y
-`UsuarioServiceTest` (16) usan **JUnit 5 + Mockito**:
+`CategoriaServiceTest` (11 pruebas), `ProductoServiceTest` (14), `BoletaServiceTest` (19),
+`UsuarioServiceTest` (18) y `AuthServiceTest` (3) usan **JUnit 5 + Mockito**:
 
 - `@ExtendWith(MockitoExtension.class)`: activa Mockito en la clase de prueba.
 - `@Mock`: crea un repositorio falso; **no se usa MySQL**.
@@ -290,7 +306,10 @@ Las excepciones propias extienden `RuntimeException`, así no hay que declarar `
 Patrón de cada prueba: **preparar** (`when`) → **ejecutar** (llamar al service) → **comprobar** (`assert`/`verify`).
 
 Se ejecutan con `./mvnw test`. `LevelupBackendApplicationTests` levanta la aplicación completa,
-por eso sí necesita MySQL encendido.
+por eso sí necesita MySQL encendido (y `JWT_SECRET` en `local.properties`).
+
+Pruebas de seguridad (sección 14.8): `JwtServiceTest` (6, sin Spring ni Mockito) y `SeguridadTest`
+(23, MockMvc, sin MySQL). En total: **95 pruebas**.
 
 ---
 
@@ -302,13 +321,15 @@ Reemplazan el checkout simulado del frontend. Archivos:
 ### 10.1 Entrada: `BoletaRequest` y `DetalleRequest`
 - Datos del cliente: `nombre`, `apellidos`, `correo` (`@Email`), `calle`, `region` y `comuna` son obligatorios
   (`@NotBlank`); `depto` e `indicaciones` son opcionales.
-- `usuarioId` es opcional (`null` = visitante). Por ahora viene en el JSON; con JWT se tomará del token.
+- `usuarioId` es opcional (`null` = visitante) y **solo lo respeta un ADMIN**. Con token de CLIENTE se usa el
+  usuario del token; sin token (o con token de VENDEDOR) se ignora. Ver sección 14.6.
 - `items`: `@NotEmpty` (al menos 1) y `List<@Valid DetalleRequest>`, así se valida cada item
   (`productoId` obligatorio, `cantidad` `@Min(1)`). Los errores aparecen como `"items[0].cantidad"`.
 - **El precio no viene del frontend**: se toma de la base de datos, así nadie puede comprar más barato
   modificando el JSON.
 
 ### 10.2 Qué hace `BoletaService.crear` (paso a paso)
+0. `crear(request, correoSesion)` decide el `usuarioId` según quién compra (sección 14.6) y llama a `crear(request)`.
 1. Si viene `usuarioId`, busca al usuario → **404** si no existe.
 2. Por cada item:
    - Si el producto está repetido en la orden → **400** (si no, dos líneas podrían superar el stock en total).
@@ -346,16 +367,19 @@ por ejemplo al guardar la boleta, se deshace el stock que ya se había descontad
   neto = round(479.976 / 1,19) = 403.341, IVA = 76.635.
 
 ### 10.5 Endpoints
-| Método | Ruta | OK | Errores |
-|---|---|---|---|
-| POST | `/api/v1/boletas` | 201 (PAGADA o RECHAZADA) | 400, 404, 409 |
-| GET | `/api/v1/boletas` | 200, de la más reciente a la más antigua | – |
-| GET | `/api/v1/boletas/{id}` | 200 | 404 |
-| GET | `/api/v1/boletas/numero/{numeroOrden}` | 200 | 404 |
-| GET | `/api/v1/boletas/usuario/{usuarioId}` | 200 (lista vacía si no ha comprado) | 404 si el usuario no existe |
+| Método | Ruta | Acceso | OK | Errores |
+|---|---|---|---|---|
+| POST | `/api/v1/boletas` | público (token opcional) | 201 (PAGADA o RECHAZADA) | 400, 404, 409 |
+| GET | `/api/v1/boletas` | ADMIN, VENDEDOR | 200, de la más reciente a la más antigua | 401, 403 |
+| GET | `/api/v1/boletas/mis-compras` | CLIENTE, ADMIN | 200 (las del usuario del token) | 401, 403 |
+| GET | `/api/v1/boletas/{id}` | ADMIN, VENDEDOR | 200 | 401, 403, 404 |
+| GET | `/api/v1/boletas/numero/{numeroOrden}` | ADMIN, VENDEDOR | 200 | 401, 403, 404 |
+| GET | `/api/v1/boletas/usuario/{usuarioId}` | ADMIN, o el CLIENTE dueño | 200 (lista vacía si no ha comprado) | 401, 403 (historial ajeno), 404 |
 
 ### 10.6 JSON de ejemplo para probar `POST /api/v1/boletas` en Swagger
-En Swagger UI → **Boletas** → `POST /api/v1/boletas` → **Try it out** → pegar:
+En Swagger UI → **Boletas** → `POST /api/v1/boletas` → **Try it out** → pegar (sin token es una compra de
+visitante y el `usuarioId` se ignora; para que quede a nombre de Pedro con su descuento, primero
+**Authorize** con el token de Pedro):
 
 ```json
 {
@@ -404,16 +428,17 @@ Variantes para la demostración:
 
 ## 11. Usuarios (registro, administración y perfil)
 
-Archivos: `UsuarioController` → `UsuarioService` → `UsuarioRepository`, `BoletaRepository` (+ `PasswordEncoder`) → MySQL.
+Archivos: `UsuarioController` (mantenedor, solo ADMIN) y `AuthController` (registro, login y perfil propio)
+→ `UsuarioService` / `AuthService` → `UsuarioRepository`, `BoletaRepository` (+ `PasswordEncoder`, `JwtService`) → MySQL.
 Las reglas son las mismas del frontend (`src/data/usuarios.js` y `src/utils/validaciones.js`).
 
 ### 11.1 Contraseñas con BCrypt
-- `pom.xml` incluye solo `spring-security-crypto`, sin `spring-boot-starter-security`. Así se puede cifrar
-  sin que Spring Security bloquee los endpoints (eso se configura en el paso de JWT).
+- `BCryptPasswordEncoder` viene en `spring-boot-starter-security` (antes se usaba solo `spring-security-crypto`,
+  mientras los endpoints seguían abiertos).
 - `config/PasswordConfig` declara el bean `PasswordEncoder` → `new BCryptPasswordEncoder()`.
 - `passwordEncoder.encode("pedro1234")` → `$2a$10$...` (60 caracteres). Cada vez da un hash distinto porque
   incluye una **sal** aleatoria, y no se puede revertir.
-- `passwordEncoder.matches("pedro1234", hash)` → `true`/`false`. Es lo que usará el login.
+- `passwordEncoder.matches("pedro1234", hash)` → `true`/`false`. Es lo que usa `AuthService.login`.
 - Se cifra en: `UsuarioService.registrar`, `crear`, `actualizar` (solo si viene una contraseña nueva)
   y `DataInitializer`.
 - Para comprobarlo en MySQL: `SELECT correo, password FROM usuario;` → todas empiezan con `$2a$10$`.
@@ -463,13 +488,30 @@ hay solo 90 opciones por nombre, así que después de 20 intentos se usan 4 díg
   recalcula siempre según el correo. Puntos y código de referido no cambian.
 - `eliminar`: si `boletaRepository.existsByUsuarioId(id)` → **409** (sus boletas quedarían apuntando a un
   usuario que no existe).
-- **Perfil**: por ahora el usuario ve su perfil con `GET /api/v1/usuarios/{id}` y lo edita con `PUT`.
-  Con JWT lo natural será `GET/PUT /api/v1/usuarios/me`, tomando el id del token.
+- **Perfil propio**: `GET/PUT /api/v1/auth/perfil` (cualquier usuario con sesión). El usuario sale del correo
+  del token, nunca de un id en la URL, así nadie puede editar a otro. `UsuarioService.actualizarPerfil` cambia
+  nombre, apellidos, fecha de nacimiento y contraseña (vacía = se mantiene). `PerfilRequest` **no tiene** rol,
+  puntos, descuento ni correo: el correo es el `sub` del token (si cambiara, el token dejaría de servir) y de él
+  depende el descuento Duoc. Si hay que cambiar el correo, lo hace el ADMIN con `PUT /api/v1/usuarios/{id}`.
 
 ### 11.6 Endpoints
+Registro, login y perfil (`AuthController`):
+
+| Método | Ruta | Acceso | OK | Errores |
+|---|---|---|---|---|
+| POST | `/api/v1/auth/registro` | público | 201 | 400 (validación, menor de edad, referido inexistente), 409 (correo) |
+| POST | `/api/v1/auth/login` | público | 200 (token + usuario) | 400, 401 (credenciales) |
+| GET | `/api/v1/auth/me` | con sesión | 200 | 401 |
+| GET | `/api/v1/auth/perfil` | con sesión | 200 | 401 |
+| PUT | `/api/v1/auth/perfil` | con sesión | 200 | 400, 401 |
+
+El registro antes estaba en `/api/v1/usuarios/registro`: **el frontend debe usar la ruta nueva** (la antigua
+ahora cae en `/api/v1/usuarios/**`, solo para ADMIN, y responde 401).
+
+Mantenedor (`UsuarioController`), todo **solo ADMIN** (sin token 401, otro rol 403):
+
 | Método | Ruta | OK | Errores |
 |---|---|---|---|
-| POST | `/api/v1/usuarios/registro` | 201 | 400 (validación, menor de edad, referido inexistente), 409 (correo) |
 | GET | `/api/v1/usuarios?rol=` | 200 | 400 (rol inválido) |
 | GET | `/api/v1/usuarios/{id}` | 200 | 404 |
 | POST | `/api/v1/usuarios` | 201 | 400, 409 |
@@ -488,7 +530,7 @@ Historial de compras: `GET /api/v1/boletas/usuario/{id}` (sección 10).
 Son datos ficticios del enunciado. No deben reutilizarse en ningún sistema real.
 
 ### 11.8 JSON de ejemplo para Swagger
-**Registro con referido** (`POST /api/v1/usuarios/registro`): Pedro sube de 100 a 200 puntos.
+**Registro con referido** (`POST /api/v1/auth/registro`): Pedro sube de 100 a 200 puntos.
 ```json
 {
   "nombre": "Valentina",
@@ -502,7 +544,7 @@ Son datos ficticios del enunciado. No deben reutilizarse en ningún sistema real
 Variantes: `"fechaNacimiento": "2012-01-01"` → 400 (menor de edad); `"codigoReferido": "LVLNOEXISTE"` → 400;
 repetir el mismo correo → 409; `"password": "abcdefgh"` → 400 (sin números).
 
-**Crear un vendedor** (`POST /api/v1/usuarios`), con el rol en **mayúsculas**:
+**Crear un vendedor** (`POST /api/v1/usuarios`, con token de ADMIN), con el rol en **mayúsculas**:
 ```json
 {
   "nombre": "Sofía",
@@ -515,7 +557,8 @@ repetir el mismo correo → 409; `"password": "abcdefgh"` → 400 (sin números)
 ```
 Para editarlo sin cambiar la contraseña, se usa `PUT /api/v1/usuarios/{id}` con el mismo JSON y `"password": ""`.
 
-**Compra con descuento Duoc** (`POST /api/v1/boletas` con `"usuarioId": 3`, Pedro): con el Mousepad
+**Compra con descuento Duoc** (`POST /api/v1/boletas` con el token de Pedro, o con token de ADMIN y
+`"usuarioId": 3`): con el Mousepad
 (id 14, oferta 14.990) → descuento 2.998, total 11.992, neto 10.077, IVA 1.915.
 
 ### 11.9 Diferencia pendiente con el frontend: mayúsculas en los roles
@@ -624,6 +667,35 @@ En `UsuarioService.esCorreoDuoc`, agregar `|| correo.endsWith("@profesor.duoc.cl
 Service: buscar al usuario; si `puntos > usuario.getPuntos()` → `DatosInvalidosException`; si no, restar y
 guardar. Controller: `@PatchMapping("/{id}/canjear")` con `@RequestParam Integer puntos` y `@Operation`.
 
+### Cambiar los permisos de un rol (ej: que el VENDEDOR también pueda editar productos)
+Todo está en `security/SecurityConfig`. Antes de la regla `.requestMatchers("/api/v1/productos/**", ...).hasRole("ADMIN")`:
+```java
+.requestMatchers(HttpMethod.PUT, "/api/v1/productos/**").hasAnyRole("ADMIN", "VENDEDOR")
+```
+Las reglas se leen **de arriba hacia abajo** y gana la primera que calza: si se pone después de la regla de
+ADMIN, nunca se usa. Actualizar la prueba `vendedor_noPuedeCrearProductos...` si cambia lo que se prueba y el
+"**Acceso:**" del `@Operation`.
+
+### Hacer pública una ruta (ej: que cualquiera vea el stock crítico)
+Cambiar `.hasAnyRole("ADMIN", "VENDEDOR")` por `.permitAll()` en la regla de `/api/v1/productos/criticos`
+(o borrarla: la siguiente regla, `GET /api/v1/productos/**`, ya es `permitAll`).
+
+### Agregar un rol nuevo (ej: `BODEGUERO`, que solo ve el stock crítico)
+1. `Rol.java`: agregar `BODEGUERO`. Se guarda como texto, así que no afecta a los datos existentes.
+2. `SecurityConfig`: `.hasAnyRole("ADMIN", "VENDEDOR", "BODEGUERO")` en `/productos/criticos`.
+3. `UsuarioDetailsService` no cambia: arma `"ROLE_" + rol` solo.
+
+### Cambiar la duración del token (ej: 1 hora)
+`application.properties`: `jwt.expiracion=3600000` (1 × 60 × 60 × 1000). No hay que tocar código.
+
+### Agregar un dato al token (ej: el nombre)
+En `JwtService.generarToken`: `.claim("nombre", usuario.getNombre())`. Recordar que el payload **no está cifrado**:
+nunca poner la contraseña ni datos sensibles.
+
+### Exigir sesión para comprar
+`SecurityConfig`: cambiar `.requestMatchers(HttpMethod.POST, "/api/v1/boletas").permitAll()` por
+`.hasRole("CLIENTE")` (o `.authenticated()`), y actualizar la prueba `visitante_puedeComprarSinCuenta`.
+
 ---
 
 ## 13. Comprobación del arranque
@@ -640,3 +712,185 @@ SELECT COUNT(*) FROM categoria;  -- 6
 SELECT COUNT(*) FROM producto;   -- 15
 SELECT correo, rol, LEFT(password, 7) FROM usuario;  -- 3 usuarios iniciales, hash $2a$10$
 ```
+
+---
+
+## 14. Seguridad: Spring Security + JWT y permisos por rol
+
+Archivos (paquete `security/`):
+
+| Archivo | Qué hace |
+|---|---|
+| `JwtService` | Genera y valida los tokens (firma HMAC-SHA con `jwt.secret`, vencen en `jwt.expiracion` = 8 h). |
+| `JwtAuthenticationFilter` | Filtro (`OncePerRequestFilter`) que lee `Authorization: Bearer <token>` en cada petición. |
+| `UsuarioDetailsService` | Busca al usuario por correo y le da la authority `ROLE_` + rol (ej: `ROLE_ADMIN`). |
+| `SecurityConfig` | Reglas: qué rol puede usar cada ruta. Stateless, sin CSRF, con CORS. |
+| `SeguridadErrorHandler` | Responde los 401 y 403 de Spring Security con el mismo JSON `ErrorResponse`. |
+
+Más `controller/AuthController`, `service/AuthService`, los DTOs `LoginRequest`, `LoginResponse`, `PerfilRequest`
+y las excepciones `CredencialesInvalidasException` (401) y `AccesoDenegadoException` (403).
+
+### 14.1 Tabla de permisos (pauta: ADMIN acceso total; VENDEDOR solo productos y órdenes; CLIENTE solo la tienda)
+
+✅ = permitido · **401** = sin token o token inválido · **403** = con sesión, pero el rol no tiene permiso.
+
+| Endpoint | Visitante | CLIENTE | VENDEDOR | ADMIN |
+|---|---|---|---|---|
+| Swagger (`/swagger-ui/**`, `/v3/api-docs/**`) | ✅ | ✅ | ✅ | ✅ |
+| `POST /auth/login`, `POST /auth/registro` | ✅ | ✅ | ✅ | ✅ |
+| `GET /auth/me`, `GET` y `PUT /auth/perfil` | 401 | ✅ | ✅ | ✅ |
+| `GET /productos`, `/productos/ofertas`, `/productos/{id}` | ✅ | ✅ | ✅ | ✅ |
+| `GET /productos/criticos` | 401 | 403 | ✅ | ✅ |
+| `POST`, `PUT`, `DELETE /productos/**` | 401 | 403 | 403 | ✅ |
+| `GET /categorias/**` | ✅ | ✅ | ✅ | ✅ |
+| `POST`, `PUT`, `DELETE /categorias/**` | 401 | 403 | 403 | ✅ |
+| `POST /boletas` | ✅ sin usuario | ✅ a su nombre | ✅ sin usuario | ✅ con el `usuarioId` del JSON |
+| `GET /boletas`, `/boletas/{id}`, `/boletas/numero/{n}` | 401 | 403 | ✅ | ✅ |
+| `GET /boletas/usuario/{id}` | 401 | solo el suyo (otro → 403) | 403 | ✅ |
+| `GET /boletas/mis-compras` | 401 | ✅ | 403 | ✅ |
+| `/usuarios/**` (mantenedor) | 401 | 403 | 403 | ✅ |
+
+(Todas las rutas empiezan con `/api/v1`.)
+
+### 14.2 Flujo del token: login → token → filtro → controller
+
+```
+1. LOGIN
+   POST /api/v1/auth/login {"correo":"pedro@duocuc.cl","password":"pedro1234"}
+   AuthController.login → AuthService.login
+     → UsuarioRepository.findByCorreoIgnoreCase      (¿existe?  si no → 401)
+     → passwordEncoder.matches(password, hash)        (¿coincide? si no → 401)
+     → JwtService.generarToken(usuario)                (sub = correo, rol = CLIENTE, exp = +8 h)
+   ← 200 {"token":"eyJhbGciOiJIUzUxMiJ9.eyJzdWIi...","tipo":"Bearer","usuario":{...,"rol":"CLIENTE"}}
+
+2. EL FRONTEND GUARDA EL TOKEN y lo envía en cada petición:
+   GET /api/v1/boletas/mis-compras
+   Authorization: Bearer eyJhbGciOiJIUzUxMiJ9...
+
+3. FILTRO (JwtAuthenticationFilter, antes de cualquier controller)
+   ¿Hay "Bearer ..."?        no → sigue como visitante
+   JwtService.esTokenValido  no → sigue como visitante y anota "token inválido o vencido"
+   JwtService.obtenerCorreo  → UsuarioDetailsService.loadUserByUsername(correo)  (rol ACTUAL desde MySQL)
+   → SecurityContextHolder: usuario autenticado con ROLE_CLIENTE
+
+4. REGLAS (SecurityConfig.authorizeHttpRequests), de arriba hacia abajo
+   GET /api/v1/boletas/mis-compras → hasAnyRole("CLIENTE","ADMIN") → ✅
+   (sin sesión → SeguridadErrorHandler 401; rol incorrecto → SeguridadErrorHandler 403)
+
+5. CONTROLLER
+   BoletaController.misCompras(Authentication authentication)
+     authentication.getName() = "pedro@duocuc.cl"
+   → BoletaService.misCompras(correo) → BoletaRepository → MySQL
+```
+
+¿Qué tiene el token? Tres partes en Base64 separadas por puntos: `header.payload.firma`. El payload de Pedro es
+`{"sub":"pedro@duocuc.cl","rol":"CLIENTE","iat":1794226023,"exp":1794254823}` (se puede ver en jwt.io).
+**No está cifrado, está firmado**: cualquiera lo lee, pero si alguien cambia `"rol"` a `"ADMIN"` la firma deja de
+coincidir y `esTokenValido` responde `false` (lo demuestra la prueba `esTokenValido_payloadModificadoParaSerAdmin_esFalso`).
+Para firmar hace falta `JWT_SECRET`, que solo tiene el servidor.
+
+¿Por qué el rol sale de la base de datos y no del token? `UsuarioDetailsService` vuelve a buscar al usuario en cada
+petición. Si el ADMIN cambia el rol de alguien (o lo elimina), el cambio aplica de inmediato aunque su token siga
+vigente. El claim `rol` del token es para el frontend (para mostrar u ocultar menús).
+
+### 14.3 SecurityConfig, línea por línea
+- `csrf.disable()`: CSRF aprovecha las **cookies** que el navegador envía solo. Aquí no hay cookies de sesión:
+  el token va en un header que el navegador nunca agrega por su cuenta.
+- `sessionCreationPolicy(STATELESS)`: el servidor no guarda sesiones; cada petición se valida con su token.
+  Por eso no existe un "logout" en el backend: el frontend borra el token.
+- `cors(Customizer.withDefaults())`: usa el bean `corsConfigurationSource` de `CorsConfig`. Tiene que ir dentro de
+  Spring Security: el navegador hace una consulta previa `OPTIONS` **sin token**, y si CORS se aplicara después
+  de Spring Security, esa consulta recibiría 401.
+- `httpBasic` y `formLogin` desactivados: el único login es `POST /api/v1/auth/login`.
+- `exceptionHandling(...)`: 401 y 403 con nuestro JSON.
+- `addFilterBefore(new JwtAuthenticationFilter(...), UsernamePasswordAuthenticationFilter.class)`: nuestro filtro
+  corre antes que el de usuario y contraseña de Spring. Se crea con `new` y no es `@Component` para que
+  Spring Boot no lo registre una segunda vez como filtro general.
+- `hasRole("ADMIN")` busca la authority `"ROLE_ADMIN"`; `hasAnyRole("ADMIN","VENDEDOR")`, cualquiera de las dos.
+- `/**` incluye la ruta base: `/api/v1/productos/**` también calza con `/api/v1/productos`.
+- El orden importa: `GET /productos/criticos` va antes que `GET /productos/**` (permitAll); si no, sería público.
+- `.anyRequest().authenticated()`: cualquier ruta no listada exige sesión (por defecto, cerrado).
+
+### 14.4 Permisos por rol vs. permisos por dueño
+- **Por rol y ruta** → `SecurityConfig` (ej: solo ADMIN y VENDEDOR ven `/boletas`).
+- **Por dueño del dato** → service, porque depende del id pedido: `BoletaService.historialUsuario(usuarioId, correo)`
+  busca al usuario del token; si no es ADMIN y su id no es `usuarioId` → `AccesoDenegadoException` → 403
+  ("Solo puedes ver tu propio historial de compras").
+- `/mis-compras` y `/auth/perfil` no reciben ningún id: el usuario sale del token, así es imposible pedir los datos de otro.
+
+### 14.5 Errores 401 y 403 con el mismo JSON
+`GlobalExceptionHandler` (`@RestControllerAdvice`) solo atrapa errores que ocurren **dentro** de un controller.
+Las reglas de `SecurityConfig` rechazan la petición antes, en la cadena de filtros, así que
+`SeguridadErrorHandler` implementa:
+- `AuthenticationEntryPoint.commence` → **401** "Debes iniciar sesión para acceder a este recurso", o
+  "El token no es válido o expiró. Inicia sesión nuevamente" si el filtro anotó un token malo.
+- `AccessDeniedHandler.handle` → **403** "No tienes permiso para realizar esta acción".
+
+Escribe el `ErrorResponse` con el `ObjectMapper` de Spring (Jackson 3), así el JSON es idéntico:
+```json
+{ "status": 403, "error": "Forbidden", "mensaje": "No tienes permiso para realizar esta acción",
+  "fecha": "2026-11-09T09:07:06.34" }
+```
+El 401 del login (clave incorrecta) y el 403 del historial ajeno sí pasan por `GlobalExceptionHandler`, porque
+los lanza un service (`CredencialesInvalidasException`, `AccesoDenegadoException`).
+
+**Token vencido en una ruta pública** (ej: ver productos con un token viejo guardado en el navegador): se atiende
+como visitante, para que la tienda no se rompa. En una ruta protegida responde 401.
+
+### 14.6 Quién compra en `POST /api/v1/boletas`
+`BoletaController.crear` recibe `Authentication` (null si no hay token) y llama a
+`BoletaService.crear(request, correoSesion)`:
+
+| Quién compra | `usuarioId` que se usa | Descuento Duoc |
+|---|---|---|
+| Visitante (sin token) | `null`, aunque el JSON traiga otro | no |
+| CLIENTE | el del token (se ignora el del JSON) | sí, si su correo es Duoc |
+| VENDEDOR | `null` (según la pauta, no compra en la tienda) | no |
+| ADMIN | el del JSON (acceso total, ej: registrar una venta para un cliente) | el del cliente elegido |
+
+Si se respetara el `usuarioId` de un visitante, cualquiera podría comprar "como Pedro" y usar su 20% de descuento.
+
+### 14.7 Probar en Swagger
+1. `http://localhost:8080/swagger-ui/index.html` → **Autenticación** → `POST /api/v1/auth/login` → Try it out:
+   `{"correo":"admin@levelup.cl","password":"admin1234"}`.
+2. Copiar el valor de `token` (sin comillas).
+3. Botón **Authorize** (arriba a la derecha) → pegar el token **sin escribir "Bearer"** → Authorize.
+4. Los endpoints con candado ahora envían el token. Para cambiar de usuario: Authorize → Logout → otro token.
+
+Prueba rápida de la tabla: con el token de `vendedor@levelup.cl` / `vendedor1234`, `GET /api/v1/boletas` → 200 y
+`POST /api/v1/productos` → 403; con el de `pedro@duocuc.cl` / `pedro1234`, `GET /api/v1/boletas/usuario/1` → 403
+y `GET /api/v1/boletas/mis-compras` → 200.
+
+### 14.8 Pruebas de seguridad
+- `JwtServiceTest` (6): se crea con `new JwtService(clave, duración)`. Comprueba el subject y el claim `rol`, y que se
+  rechacen un token con el payload modificado, uno firmado con otra clave, uno vencido (duración negativa) y un
+  texto que no es token. También, que una clave de menos de 32 caracteres impida arrancar.
+- `AuthServiceTest` (3, Mockito): login correcto (token + `"Bearer"` + usuario), contraseña incorrecta y correo
+  inexistente (mismo mensaje en los dos casos, y no se genera token).
+- `SeguridadTest` (23, MockMvc): `@WebMvcTest` carga solo la capa web + nuestra seguridad (`@Import`), con los
+  services como `@MockitoBean`. Por eso **no necesita MySQL**: prueba quién puede entrar a cada ruta, no la lógica.
+  - `@WithMockUser(username = "...", roles = "VENDEDOR")` simula una sesión sin token.
+  - Las pruebas "con token real" generan un JWT con `JwtService` y lo envían en el header: prueban el camino
+    completo filtro → `UsuarioDetailsService` → reglas → controller.
+  - `jsonPath("$.mensaje")` revisa que los 401 y 403 tengan el JSON `ErrorResponse`.
+
+### 14.9 Dependencias (pom.xml)
+- `spring-boot-starter-security` (reemplaza a `spring-security-crypto`; incluye BCrypt) y, para pruebas,
+  `spring-boot-starter-security-test` (`@WithMockUser` y la integración con MockMvc).
+- JJWT 0.13.0: `jjwt-api` (lo que usa nuestro código) y, solo al ejecutar, `jjwt-impl` y **`jjwt-gson`**.
+  ¿Por qué Gson y no `jjwt-jackson`? `jjwt-jackson` depende de **Jackson 2** (`com.fasterxml.jackson.databind`),
+  pero Spring Boot 4 usa **Jackson 3** (`tools.jackson`) y JJWT no tiene un módulo para Jackson 3. No llegan a
+  chocar (son paquetes distintos), pero el JWT quedaría atado a la versión antigua. Con Gson se evita la mezcla, y
+  su versión la administra Spring Boot. Las respuestas de la API siguen usando Jackson 3.
+
+### 14.10 Preguntas posibles de la defensa
+- **¿Dónde se guarda la sesión?** En ningún lado del servidor (stateless): en el token, que guarda el frontend.
+- **¿Cómo se cierra sesión?** El frontend borra el token. El token sigue siendo válido hasta que vence (8 h);
+  para invalidarlo antes habría que mantener una "lista negra" en el servidor.
+- **¿Por qué el login dice "Correo o contraseña incorrectos" en ambos casos?** Para no revelar qué correos
+  están registrados.
+- **¿Qué pasa si roban `JWT_SECRET`?** Podrían fabricar tokens de ADMIN. Por eso va en `local.properties`
+  (fuera de GitHub). Si se filtra, se cambia y todos los tokens anteriores dejan de servir.
+- **¿Diferencia entre 401 y 403?** 401 = no sé quién eres (sin token o token malo). 403 = sé quién eres, pero
+  tu rol no puede hacer eso.
+- **¿Por qué no hay CSRF?** Ver 14.3: no hay cookies de sesión.

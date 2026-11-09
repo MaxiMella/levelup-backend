@@ -1,9 +1,11 @@
 package cl.duoc.levelup.controller;
 
+import cl.duoc.levelup.config.OpenApiConfig;
 import cl.duoc.levelup.dto.CategoriaRequest;
 import cl.duoc.levelup.model.Categoria;
 import cl.duoc.levelup.service.CategoriaService;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -23,6 +25,7 @@ import java.util.List;
  * Endpoints REST de categorías: /api/v1/categorias.
  * El controller solo recibe la petición, llama al service y elige el código HTTP.
  * Las validaciones de negocio están en CategoriaService y los errores los responde GlobalExceptionHandler.
+ * Permisos (SecurityConfig): los GET son públicos; crear, editar y eliminar son solo para ADMIN.
  */
 @RestController
 @RequestMapping("/api/v1/categorias")
@@ -37,28 +40,29 @@ public class CategoriaController {
 
     @GetMapping
     @Operation(summary = "Listar todas las categorías",
-            description = "Devuelve todas las categorías, activas e inactivas (para el panel de administración).")
+            description = "**Acceso: público.** Devuelve todas las categorías, activas e inactivas (para el panel de administración).")
     public List<Categoria> listarTodas() {
         return categoriaService.listarTodas();
     }
 
     @GetMapping("/activas")
     @Operation(summary = "Listar categorías activas",
-            description = "Devuelve solo las categorías activas, que son las que se muestran en la tienda.")
+            description = "**Acceso: público.** Devuelve solo las categorías activas, que son las que se muestran en la tienda.")
     public List<Categoria> listarActivas() {
         return categoriaService.listarActivas();
     }
 
     @GetMapping("/{id}")
     @Operation(summary = "Obtener una categoría por id",
-            description = "Devuelve la categoría indicada. Responde 404 si no existe.")
+            description = "**Acceso: público.** Devuelve la categoría indicada. Responde 404 si no existe.")
     public Categoria obtenerPorId(@PathVariable Long id) {
         return categoriaService.obtenerPorId(id);
     }
 
     @PostMapping
+    @SecurityRequirement(name = OpenApiConfig.ESQUEMA_JWT)
     @Operation(summary = "Crear una categoría",
-            description = "Crea una categoría nueva y responde 201. Responde 400 si faltan datos "
+            description = "**Acceso: solo ADMIN.** Crea una categoría nueva y responde 201. Responde 400 si faltan datos "
                     + "y 409 si ya existe otra categoría con el mismo nombre.")
     public ResponseEntity<Categoria> crear(@Valid @RequestBody CategoriaRequest request) {
         Categoria creada = categoriaService.crear(request);
@@ -66,16 +70,18 @@ public class CategoriaController {
     }
 
     @PutMapping("/{id}")
+    @SecurityRequirement(name = OpenApiConfig.ESQUEMA_JWT)
     @Operation(summary = "Actualizar una categoría",
-            description = "Reemplaza los datos de la categoría. Responde 400 si faltan datos, "
+            description = "**Acceso: solo ADMIN.** Reemplaza los datos de la categoría. Responde 400 si faltan datos, "
                     + "404 si no existe y 409 si el nombre ya lo usa otra categoría.")
     public Categoria actualizar(@PathVariable Long id, @Valid @RequestBody CategoriaRequest request) {
         return categoriaService.actualizar(id, request);
     }
 
     @DeleteMapping("/{id}")
+    @SecurityRequirement(name = OpenApiConfig.ESQUEMA_JWT)
     @Operation(summary = "Eliminar una categoría",
-            description = "Elimina la categoría y responde 204 sin contenido. Responde 404 si no existe "
+            description = "**Acceso: solo ADMIN.** Elimina la categoría y responde 204 sin contenido. Responde 404 si no existe "
                     + "y 409 si todavía tiene productos asociados.")
     public ResponseEntity<Void> eliminar(@PathVariable Long id) {
         categoriaService.eliminar(id);

@@ -1,5 +1,6 @@
 package cl.duoc.levelup.service;
 
+import cl.duoc.levelup.dto.PerfilRequest;
 import cl.duoc.levelup.dto.RegistroRequest;
 import cl.duoc.levelup.dto.UsuarioRequest;
 import cl.duoc.levelup.dto.UsuarioResponse;
@@ -21,7 +22,8 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Lógica de negocio de los usuarios: registro de clientes (con referidos) y mantenedor del administrador.
+ * Lógica de negocio de los usuarios: registro de clientes (con referidos), perfil propio
+ * y mantenedor del administrador. El login está en AuthService.
  * Replica las reglas del frontend (src/data/usuarios.js y src/utils/validaciones.js):
  * correo único, mayor de 18 años, descuento Duoc, código de referido y 100 puntos por referido.
  * Las contraseñas se guardan cifradas con BCrypt y nunca se devuelven (se responde UsuarioResponse).
@@ -160,11 +162,41 @@ public class UsuarioService {
         usuarioRepository.delete(usuario);
     }
 
+    // ===================== Perfil (usuario con sesión) =====================
+
+    /** Datos del usuario que inició sesión. El correo viene del token (lo entrega el controller). */
+    public UsuarioResponse obtenerPerfil(String correo) {
+        return UsuarioResponse.desde(buscarPorCorreo(correo));
+    }
+
+    /**
+     * El usuario edita sus propios datos: nombre, apellidos, fecha de nacimiento y, si viene, la contraseña.
+     * Rol, puntos, descuento Duoc, código de referido y correo NO cambian: PerfilRequest ni siquiera los tiene.
+     */
+    public UsuarioResponse actualizarPerfil(String correo, PerfilRequest request) {
+        Usuario usuario = buscarPorCorreo(correo);
+        validarMayorDeEdad(request.getFechaNacimiento());
+
+        usuario.setNombre(request.getNombre().trim());
+        usuario.setApellidos(request.getApellidos().trim());
+        usuario.setFechaNacimiento(request.getFechaNacimiento());
+        if (request.getPassword() != null && !request.getPassword().isBlank()) {
+            usuario.setPassword(passwordEncoder.encode(request.getPassword()));
+        }
+
+        return UsuarioResponse.desde(usuarioRepository.save(usuario));
+    }
+
     // ===================== Métodos de apoyo =====================
 
     private Usuario buscarPorId(Long id) {
         return usuarioRepository.findById(id)
                 .orElseThrow(() -> new RecursoNoEncontradoException("No existe el usuario con id " + id));
+    }
+
+    private Usuario buscarPorCorreo(String correo) {
+        return usuarioRepository.findByCorreoIgnoreCase(correo)
+                .orElseThrow(() -> new RecursoNoEncontradoException("No existe el usuario con correo " + correo));
     }
 
     /** Los correos se guardan sin espacios y en minúsculas, así "Ana@Gmail.com" y "ana@gmail.com" son el mismo. */

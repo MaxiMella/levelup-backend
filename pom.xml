@@ -30,6 +30,8 @@
 		<java.version>21</java.version>
 		<!-- springdoc 3.x es la línea compatible con Spring Boot 4 (3.2.0 está compilada con Boot 4.1.2) -->
 		<springdoc.version>3.2.0</springdoc.version>
+		<!-- JJWT (tokens JWT). 0.13.0 es la última versión; se usa con Gson (ver jjwt-gson más abajo) -->
+		<jjwt.version>0.13.0</jjwt.version>
 	</properties>
 	<dependencies>
 		<dependency>
@@ -50,11 +52,32 @@
 			<artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
 			<version>${springdoc.version}</version>
 		</dependency>
-		<!-- Solo la parte de cifrado de Spring Security (BCrypt), sin el starter: los endpoints siguen abiertos.
+		<!-- Spring Security: protege los endpoints por rol. Incluye BCrypt (PasswordEncoder).
 		     La versión la administra spring-boot-starter-parent. -->
 		<dependency>
-			<groupId>org.springframework.security</groupId>
-			<artifactId>spring-security-crypto</artifactId>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-security</artifactId>
+		</dependency>
+		<!-- JWT con JJWT: jjwt-api es lo que usa nuestro código; jjwt-impl y jjwt-gson solo se necesitan al ejecutar.
+		     Se usa jjwt-gson y no jjwt-jackson porque jjwt-jackson depende de Jackson 2 (com.fasterxml), mientras que
+		     Spring Boot 4 usa Jackson 3 (tools.jackson) y no existe un módulo de JJWT para Jackson 3.
+		     La versión de Gson la administra Spring Boot. -->
+		<dependency>
+			<groupId>io.jsonwebtoken</groupId>
+			<artifactId>jjwt-api</artifactId>
+			<version>${jjwt.version}</version>
+		</dependency>
+		<dependency>
+			<groupId>io.jsonwebtoken</groupId>
+			<artifactId>jjwt-impl</artifactId>
+			<version>${jjwt.version}</version>
+			<scope>runtime</scope>
+		</dependency>
+		<dependency>
+			<groupId>io.jsonwebtoken</groupId>
+			<artifactId>jjwt-gson</artifactId>
+			<version>${jjwt.version}</version>
+			<scope>runtime</scope>
 		</dependency>
 
 		<dependency>
@@ -86,6 +109,12 @@
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-webmvc-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<!-- Pruebas de seguridad: @WithMockUser y la integración de Spring Security con MockMvc -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-security-test</artifactId>
 			<scope>test</scope>
 		</dependency>
 	</dependencies>

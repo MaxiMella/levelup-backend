@@ -56,7 +56,9 @@ public class BoletaRequest {
 
     /**
      * Opcional: id del usuario que compra; null si compra como visitante.
-     * Por ahora viene en el JSON; cuando se agregue JWT se tomará del token.
+     * Solo se respeta si quien compra es ADMIN. Con token de CLIENTE se usa el usuario del token,
+     * y sin token (o con token de VENDEDOR) se ignora: así nadie compra a nombre de otro
+     * ni usa su descuento Duoc (ver BoletaService.crear(request, correoSesion)).
      */
     private Long usuarioId;
 

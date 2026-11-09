@@ -2,6 +2,7 @@ package cl.duoc.levelup.service;
 
 import cl.duoc.levelup.dto.BoletaRequest;
 import cl.duoc.levelup.dto.DetalleRequest;
+import cl.duoc.levelup.exception.AccesoDenegadoException;
 import cl.duoc.levelup.exception.ConflictoException;
 import cl.duoc.levelup.exception.DatosInvalidosException;
 import cl.duoc.levelup.exception.RecursoNoEncontradoException;
@@ -9,6 +10,7 @@ import cl.duoc.levelup.model.Boleta;
 import cl.duoc.levelup.model.DetalleBoleta;
 import cl.duoc.levelup.model.EstadoBoleta;
 import cl.duoc.levelup.model.Producto;
+import cl.duoc.levelup.model.Rol;
 import cl.duoc.levelup.model.Usuario;
 import cl.duoc.levelup.repository.BoletaRepository;
 import cl.duoc.levelup.repository.ProductoRepository;
@@ -128,6 +130,33 @@ public class BoletaService {
         return boletaRepository.save(boleta);
     }
 
+    /**
+     * Crea la boleta según quién está comprando (lo usa BoletaController).
+     * correoSesion es el correo del token, o null si compra un visitante.
+     * - ADMIN: se respeta el usuarioId del JSON (acceso total, ej: registrar una venta para un cliente).
+     * - CLIENTE: el usuario es el del token y se ignora el usuarioId del JSON.
+     * - Visitante o VENDEDOR: usuarioId = null (compra sin cuenta).
+     * Así nadie puede comprar a nombre de otro ni usar su descuento Duoc enviando otro usuarioId.
+     */
+    @Transactional
+    public Boleta crear(BoletaRequest request, String correoSesion) {
+        Usuario sesion = null;
+        if (correoSesion != null) {
+            sesion = buscarUsuarioPorCorreo(correoSesion);
+        }
+
+        boolean esAdmin = sesion != null && sesion.getRol() == Rol.ADMIN;
+        boolean esCliente = sesion != null && sesion.getRol() == Rol.CLIENTE;
+
+        if (esCliente) {
+            request.setUsuarioId(sesion.getId());
+        } else if (!esAdmin) {
+            request.setUsuarioId(null);
+        }
+        // Si es ADMIN, el usuarioId queda tal como vino en el JSON.
+        return crear(request);
+    }
+
     /** Todas las boletas, de la más reciente a la más antigua (panel admin y vendedor). */
     public List<Boleta> listarTodas() {
         return boletaRepository.findAllByOrderByFechaDesc();
@@ -151,6 +180,31 @@ public class BoletaService {
             throw new RecursoNoEncontradoException("No existe el usuario con id " + usuarioId);
         }
         return boletaRepository.findByUsuarioIdOrderByFechaDesc(usuarioId);
+    }
+
+    /**
+     * Historial revisando quién lo pide: el ADMIN ve el de cualquiera y el cliente solo el suyo (si no, 403).
+     * SecurityConfig ya dejó pasar solo a ADMIN y CLIENTE; aquí se revisa que sea el dueño,
+     * porque eso depende del id pedido y no solo del rol.
+     */
+    public List<Boleta> historialUsuario(Long usuarioId, String correoSesion) {
+        Usuario sesion = buscarUsuarioPorCorreo(correoSesion);
+        if (sesion.getRol() != Rol.ADMIN && !sesion.getId().equals(usuarioId)) {
+            throw new AccesoDenegadoException("Solo puedes ver tu propio historial de compras");
+        }
+        return historialUsuario(usuarioId);
+    }
+
+    /** Compras del usuario que inició sesión (GET /api/v1/boletas/mis-compras). */
+    public List<Boleta> misCompras(String correoSesion) {
+        Usuario sesion = buscarUsuarioPorCorreo(correoSesion);
+        return boletaRepository.findByUsuarioIdOrderByFechaDesc(sesion.getId());
+    }
+
+    /** Usuario del token. Debería existir siempre (el filtro JWT ya lo buscó), pero si no, 404. */
+    private Usuario buscarUsuarioPorCorreo(String correo) {
+        return usuarioRepository.findByCorreoIgnoreCase(correo)
+                .orElseThrow(() -> new RecursoNoEncontradoException("No existe el usuario con correo " + correo));
     }
 
     /** Precio de oferta si el producto está en oferta (misma regla que findEnOferta); si no, el normal. */

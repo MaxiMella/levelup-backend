@@ -1,5 +1,6 @@
 package cl.duoc.levelup.service;
 
+import cl.duoc.levelup.dto.PerfilRequest;
 import cl.duoc.levelup.dto.RegistroRequest;
 import cl.duoc.levelup.dto.UsuarioRequest;
 import cl.duoc.levelup.dto.UsuarioResponse;
@@ -264,5 +265,41 @@ class UsuarioServiceTest {
         usuarioService.eliminar(2L);
 
         verify(usuarioRepository).delete(existente);
+    }
+
+    // ----- perfil propio (usuario con sesión) -----
+
+    @Test
+    void actualizarPerfil_cambiaDatosPeroNoRolPuntosDescuentoNiCorreo() {
+        Usuario pedro = usuarioExistente(3L, "pedro@duocuc.cl");
+        pedro.setRol(Rol.CLIENTE);
+        pedro.setPuntos(100);
+        pedro.setDescuentoDuoc(true);
+        when(usuarioRepository.findByCorreoIgnoreCase("pedro@duocuc.cl")).thenReturn(Optional.of(pedro));
+        saveDevuelveElUsuario();
+
+        UsuarioResponse respuesta = usuarioService.actualizarPerfil("pedro@duocuc.cl",
+                new PerfilRequest("  Pedro Pablo ", "Hacker", "", LocalDate.of(2002, 8, 20)));
+
+        assertEquals("Pedro Pablo", respuesta.getNombre());
+        assertEquals("pedro@duocuc.cl", respuesta.getCorreo());
+        assertEquals(Rol.CLIENTE, respuesta.getRol());
+        assertEquals(100, respuesta.getPuntos());
+        assertTrue(respuesta.isDescuentoDuoc());
+        assertEquals("HASH_ACTUAL", pedro.getPassword()); // contraseña vacía = se mantiene
+        verify(passwordEncoder, never()).encode(anyString());
+    }
+
+    @Test
+    void actualizarPerfil_conPasswordNueva_laCifra() {
+        Usuario pedro = usuarioExistente(3L, "pedro@duocuc.cl");
+        when(usuarioRepository.findByCorreoIgnoreCase("pedro@duocuc.cl")).thenReturn(Optional.of(pedro));
+        when(passwordEncoder.encode("nueva1234")).thenReturn("HASH_NUEVO");
+        saveDevuelveElUsuario();
+
+        usuarioService.actualizarPerfil("pedro@duocuc.cl",
+                new PerfilRequest("Pedro", "Hacker", "nueva1234", LocalDate.of(2002, 8, 20)));
+
+        assertEquals("HASH_NUEVO", pedro.getPassword());
     }
 }

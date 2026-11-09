@@ -30,7 +30,7 @@ public class Usuario {
     private String correo;
 
     /**
-     * Se guarda cifrada (BCrypt) cuando se configure Spring Security.
+     * Se guarda cifrada con BCrypt (ver config/PasswordConfig).
      * WRITE_ONLY: se puede recibir en un JSON, pero nunca se envía en las respuestas.
      */
     @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)

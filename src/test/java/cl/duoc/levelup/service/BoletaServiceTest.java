@@ -2,6 +2,7 @@ package cl.duoc.levelup.service;
 
 import cl.duoc.levelup.dto.BoletaRequest;
 import cl.duoc.levelup.dto.DetalleRequest;
+import cl.duoc.levelup.exception.AccesoDenegadoException;
 import cl.duoc.levelup.exception.ConflictoException;
 import cl.duoc.levelup.exception.DatosInvalidosException;
 import cl.duoc.levelup.exception.RecursoNoEncontradoException;
@@ -9,6 +10,7 @@ import cl.duoc.levelup.model.Boleta;
 import cl.duoc.levelup.model.DetalleBoleta;
 import cl.duoc.levelup.model.EstadoBoleta;
 import cl.duoc.levelup.model.Producto;
+import cl.duoc.levelup.model.Rol;
 import cl.duoc.levelup.model.Usuario;
 import cl.duoc.levelup.repository.BoletaRepository;
 import cl.duoc.levelup.repository.ProductoRepository;
@@ -36,7 +38,8 @@ import static org.mockito.Mockito.when;
 
 /**
  * Pruebas unitarias de BoletaService con Mockito (sin base de datos).
- * Cubren el pago simulado, el descuento de stock, los cálculos de montos y los errores.
+ * Cubren el pago simulado, el descuento de stock, los cálculos de montos y los errores,
+ * y las reglas según quién tiene la sesión (usuario del token, historial solo del dueño).
  */
 @ExtendWith(MockitoExtension.class)
 class BoletaServiceTest {
@@ -248,5 +251,100 @@ class BoletaServiceTest {
         when(usuarioRepository.existsById(50L)).thenReturn(false);
 
         assertThrows(RecursoNoEncontradoException.class, () -> boletaService.historialUsuario(50L));
+    }
+
+    // ----- según quién tiene la sesión (JWT) -----
+
+    private Usuario usuarioConRol(Long id, String correo, Rol rol, boolean descuentoDuoc) {
+        Usuario usuario = usuario(id, descuentoDuoc);
+        usuario.setCorreo(correo);
+        usuario.setRol(rol);
+        return usuario;
+    }
+
+    @Test
+    void crear_conSesionDeCliente_usaElUsuarioDelTokenEIgnoraUsuarioId() {
+        // Pedro (id 3, Duoc) tiene sesión, pero el JSON dice usuarioId 99: se usa Pedro.
+        Usuario pedro = usuarioConRol(3L, "pedro@duocuc.cl", Rol.CLIENTE, true);
+        when(usuarioRepository.findByCorreoIgnoreCase("pedro@duocuc.cl")).thenReturn(Optional.of(pedro));
+        when(usuarioRepository.findById(3L)).thenReturn(Optional.of(pedro));
+        when(productoRepository.findById(14L)).thenReturn(Optional.of(producto(14L, "Mousepad", 18990, 14990, 20)));
+        saveDevuelveLaBoleta();
+
+        Boleta boleta = boletaService.crear(request("pedro@duocuc.cl", 99L, new DetalleRequest(14L, 1)),
+                "pedro@duocuc.cl");
+
+        assertSame(pedro, boleta.getUsuario());
+        assertEquals(2998, boleta.getDescuento()); // 20% de 14990, el descuento Duoc de Pedro
+        verify(usuarioRepository, never()).findById(99L);
+    }
+
+    @Test
+    void crear_visitanteConUsuarioId_loIgnoraYNoAplicaDescuento() {
+        // Sin token alguien envía usuarioId 3 (Pedro) para usar su descuento: se ignora.
+        when(productoRepository.findById(14L)).thenReturn(Optional.of(producto(14L, "Mousepad", 18990, 14990, 20)));
+        saveDevuelveLaBoleta();
+
+        Boleta boleta = boletaService.crear(request("ana@gmail.com", 3L, new DetalleRequest(14L, 1)), null);
+
+        assertNull(boleta.getUsuario());
+        assertEquals(0, boleta.getDescuento());
+        verify(usuarioRepository, never()).findById(any());
+    }
+
+    @Test
+    void crear_conSesionDeAdmin_respetaElUsuarioIdDelJson() {
+        Usuario admin = usuarioConRol(1L, "admin@levelup.cl", Rol.ADMIN, false);
+        Usuario pedro = usuarioConRol(3L, "pedro@duocuc.cl", Rol.CLIENTE, true);
+        when(usuarioRepository.findByCorreoIgnoreCase("admin@levelup.cl")).thenReturn(Optional.of(admin));
+        when(usuarioRepository.findById(3L)).thenReturn(Optional.of(pedro));
+        when(productoRepository.findById(14L)).thenReturn(Optional.of(producto(14L, "Mousepad", 18990, 14990, 20)));
+        saveDevuelveLaBoleta();
+
+        Boleta boleta = boletaService.crear(request("pedro@duocuc.cl", 3L, new DetalleRequest(14L, 1)),
+                "admin@levelup.cl");
+
+        assertSame(pedro, boleta.getUsuario());
+    }
+
+    @Test
+    void historialUsuario_clientePideHistorialAjeno_lanzaAccesoDenegado() {
+        Usuario pedro = usuarioConRol(3L, "pedro@duocuc.cl", Rol.CLIENTE, true);
+        when(usuarioRepository.findByCorreoIgnoreCase("pedro@duocuc.cl")).thenReturn(Optional.of(pedro));
+
+        assertThrows(AccesoDenegadoException.class, () -> boletaService.historialUsuario(5L, "pedro@duocuc.cl"));
+        verify(boletaRepository, never()).findByUsuarioIdOrderByFechaDesc(any());
+    }
+
+    @Test
+    void historialUsuario_clientePideSuPropioHistorial_loDevuelve() {
+        Usuario pedro = usuarioConRol(3L, "pedro@duocuc.cl", Rol.CLIENTE, true);
+        List<Boleta> boletas = List.of(new Boleta());
+        when(usuarioRepository.findByCorreoIgnoreCase("pedro@duocuc.cl")).thenReturn(Optional.of(pedro));
+        when(usuarioRepository.existsById(3L)).thenReturn(true);
+        when(boletaRepository.findByUsuarioIdOrderByFechaDesc(3L)).thenReturn(boletas);
+
+        assertEquals(boletas, boletaService.historialUsuario(3L, "pedro@duocuc.cl"));
+    }
+
+    @Test
+    void historialUsuario_adminPuedeVerElDeCualquierUsuario() {
+        Usuario admin = usuarioConRol(1L, "admin@levelup.cl", Rol.ADMIN, false);
+        List<Boleta> boletas = List.of(new Boleta());
+        when(usuarioRepository.findByCorreoIgnoreCase("admin@levelup.cl")).thenReturn(Optional.of(admin));
+        when(usuarioRepository.existsById(3L)).thenReturn(true);
+        when(boletaRepository.findByUsuarioIdOrderByFechaDesc(3L)).thenReturn(boletas);
+
+        assertEquals(boletas, boletaService.historialUsuario(3L, "admin@levelup.cl"));
+    }
+
+    @Test
+    void misCompras_devuelveLasBoletasDelUsuarioDelToken() {
+        Usuario pedro = usuarioConRol(3L, "pedro@duocuc.cl", Rol.CLIENTE, true);
+        List<Boleta> boletas = List.of(new Boleta(), new Boleta());
+        when(usuarioRepository.findByCorreoIgnoreCase("pedro@duocuc.cl")).thenReturn(Optional.of(pedro));
+        when(boletaRepository.findByUsuarioIdOrderByFechaDesc(3L)).thenReturn(boletas);
+
+        assertEquals(2, boletaService.misCompras("pedro@duocuc.cl").size());
     }
 }

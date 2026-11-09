@@ -1,2 +1,5 @@
 # Copia este archivo con el nombre local.properties y escribe tu contraseña de MySQL.
 DB_PASSWORD=tu_clave_de_mysql
+# Clave para firmar los tokens JWT: cualquier texto de al menos 32 caracteres.
+# Usa una propia (ej: generada con "openssl rand -base64 48") y no la compartas.
+JWT_SECRET=cambia_esta_clave_por_una_propia_de_al_menos_32_caracteres

@@ -47,6 +47,22 @@ public class GlobalExceptionHandler {
         return responder(HttpStatus.BAD_REQUEST, ex.getMessage(), null);
     }
 
+    /** 401: correo o contraseña incorrectos en el login. */
+    @ExceptionHandler(CredencialesInvalidasException.class)
+    public ResponseEntity<ErrorResponse> manejarCredencialesInvalidas(CredencialesInvalidasException ex) {
+        return responder(HttpStatus.UNAUTHORIZED, ex.getMessage(), null);
+    }
+
+    /**
+     * 403: el usuario tiene sesión, pero el dato no le pertenece (ej: historial de compras de otro cliente).
+     * Los 401 y 403 de las reglas por ruta de SecurityConfig ocurren antes de llegar al controller,
+     * por eso los responde security/SeguridadErrorHandler con este mismo formato.
+     */
+    @ExceptionHandler(AccesoDenegadoException.class)
+    public ResponseEntity<ErrorResponse> manejarAccesoDenegado(AccesoDenegadoException ex) {
+        return responder(HttpStatus.FORBIDDEN, ex.getMessage(), null);
+    }
+
     /**
      * 400: falló alguna anotación de Validation (@NotBlank, @Positive...) en un DTO con @Valid.
      * Se arma un mapa campo -> mensaje para que el frontend sepa qué corregir.
