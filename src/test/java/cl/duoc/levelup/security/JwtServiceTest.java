@@ -19,9 +19,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class JwtServiceTest {
 
     private static final String CLAVE = "clave-de-prueba-para-los-tests-de-jwt-123456";
-    private static final long OCHO_HORAS = 8 * 60 * 60 * 1000L;
+    private static final long SESENTA_MINUTOS = 60 * 60 * 1000L; // igual que jwt.expiracion=3600000
 
-    private final JwtService jwtService = new JwtService(CLAVE, OCHO_HORAS);
+    private final JwtService jwtService = new JwtService(CLAVE, SESENTA_MINUTOS);
 
     private Usuario usuario(String correo, Rol rol) {
         Usuario usuario = new Usuario();
@@ -41,6 +41,19 @@ class JwtServiceTest {
     }
 
     @Test
+    void obtenerVencimiento_esLaHoraActualMasSesentaMinutos() {
+        long antes = System.currentTimeMillis();
+        String token = jwtService.generarToken(usuario("pedro@duocuc.cl", Rol.CLIENTE));
+        long despues = System.currentTimeMillis();
+
+        long vence = jwtService.obtenerVencimiento(token).getTime();
+
+        // El "exp" del token se guarda en segundos (se pierden los milisegundos), por eso se compara con 1 s de margen.
+        assertTrue(vence >= antes + SESENTA_MINUTOS - 1000);
+        assertTrue(vence <= despues + SESENTA_MINUTOS);
+    }
+
+    @Test
     void esTokenValido_payloadModificadoParaSerAdmin_esFalso() {
         String token = jwtService.generarToken(usuario("pedro@duocuc.cl", Rol.CLIENTE));
         String[] partes = token.split("\\.");
@@ -54,7 +67,7 @@ class JwtServiceTest {
 
     @Test
     void esTokenValido_firmadoConOtraClave_esFalso() {
-        JwtService otroServidor = new JwtService("otra-clave-distinta-de-al-menos-32-caracteres", OCHO_HORAS);
+        JwtService otroServidor = new JwtService("otra-clave-distinta-de-al-menos-32-caracteres", SESENTA_MINUTOS);
         String tokenAjeno = otroServidor.generarToken(usuario("admin@levelup.cl", Rol.ADMIN));
 
         assertFalse(jwtService.esTokenValido(tokenAjeno));
@@ -78,7 +91,7 @@ class JwtServiceTest {
     @Test
     void constructor_claveCorta_lanzaError() {
         // Menos de 32 caracteres: la aplicación no debe arrancar con una clave insegura.
-        assertThrows(IllegalStateException.class, () -> new JwtService("corta", OCHO_HORAS));
-        assertThrows(IllegalStateException.class, () -> new JwtService("", OCHO_HORAS));
+        assertThrows(IllegalStateException.class, () -> new JwtService("corta", SESENTA_MINUTOS));
+        assertThrows(IllegalStateException.class, () -> new JwtService("", SESENTA_MINUTOS));
     }
 }

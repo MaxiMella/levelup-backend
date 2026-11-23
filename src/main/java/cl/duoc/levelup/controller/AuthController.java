@@ -25,8 +25,8 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * Endpoints de autenticación y de la cuenta propia: /api/v1/auth.
  * - login y registro son públicos (permitAll en SecurityConfig).
- * - me y perfil necesitan token: el usuario se identifica con el correo del token, nunca con un id en la URL,
- *   así cada uno solo puede ver y editar sus propios datos.
+ * - me, perfil y refresh necesitan token: el usuario se identifica con el correo del token, nunca con un id en la URL,
+ *   así cada uno solo puede ver y editar sus propios datos (y solo puede renovar su propio token).
  *
  * "Authentication authentication" lo entrega Spring Security: es el usuario que dejó JwtAuthenticationFilter
  * en el SecurityContext. authentication.getName() devuelve el correo (el "sub" del token).
@@ -47,10 +47,25 @@ public class AuthController {
     @PostMapping("/login")
     @Operation(summary = "Iniciar sesión",
             description = "**Acceso: público.** Recibe correo y contraseña. Si son correctos responde 200 con el "
-                    + "token JWT (válido por 8 horas), el tipo \"Bearer\" y los datos del usuario con su rol. "
+                    + "token JWT (válido por 60 minutos), el tipo \"Bearer\", la fecha de vencimiento \"expiraEn\" "
+                    + "(milisegundos epoch) y los datos del usuario con su rol. Antes de que venza, el token se "
+                    + "renueva con POST /api/v1/auth/refresh. "
                     + "Responde 400 si falta un campo y 401 si el correo o la contraseña son incorrectos.")
     public LoginResponse login(@Valid @RequestBody LoginRequest request) {
         return authService.login(request);
+    }
+
+    @PostMapping("/refresh")
+    @SecurityRequirement(name = OpenApiConfig.ESQUEMA_JWT)
+    @Operation(summary = "Renovar el token",
+            description = "**Acceso: cualquier usuario con sesión.** Recibe el token actual en el header Authorization "
+                    + "(todavía válido, no vencido) y responde 200 con un token NUEVO por otros 60 minutos, con la misma "
+                    + "forma que el login (token, tipo, expiraEn y usuario). El token nuevo se arma con los datos actuales "
+                    + "de la base de datos: si un administrador cambió el rol, trae el rol nuevo. No lleva cuerpo. "
+                    + "Responde 401 sin token, con un token alterado o vencido (hay que volver a iniciar sesión) "
+                    + "o si el usuario ya no existe.")
+    public LoginResponse renovarToken(Authentication authentication) {
+        return authService.renovarToken(authentication.getName());
     }
 
     @PostMapping("/registro")

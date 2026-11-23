@@ -57,7 +57,9 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/login", "/api/v1/auth/registro").permitAll()
 
                         // ----- Sesión propia (cualquier rol) -----
-                        .requestMatchers("/api/v1/auth/**").authenticated() // /me y /perfil
+                        // /me, /perfil y POST /refresh. /refresh exige un token válido (no vencido): con uno
+                        // vencido el filtro no deja al usuario autenticado y esta regla responde 401.
+                        .requestMatchers("/api/v1/auth/**").authenticated()
 
                         // ----- Productos y categorías -----
                         .requestMatchers(HttpMethod.GET, "/api/v1/productos/criticos").hasAnyRole("ADMIN", "VENDEDOR")

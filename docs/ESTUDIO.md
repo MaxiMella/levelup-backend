@@ -153,7 +153,7 @@ Consultas para los reportes (`BoletaRepository`, sección 15):
 `CategoriaRequest`, `ProductoRequest`, `BoletaRequest` (con su lista de `DetalleRequest`), `RegistroRequest`,
 `UsuarioRequest`, `LoginRequest` y `PerfilRequest` son los datos que **envía** el frontend al crear o actualizar.
 Las respuestas devuelven directamente las entidades, **excepto en usuarios**, que responden `UsuarioResponse`
-(sin contraseña), y en el login, que responde `LoginResponse` (token + `UsuarioResponse`).
+(sin contraseña), y en el login y la renovación del token, que responden `LoginResponse` (token + `expiraEn` + `UsuarioResponse`).
 Los reportes responden DTOs propios (`DashboardResponse`, `ReporteVentasResponse`, `VentaCategoriaResponse`,
 `ProductoVendidoResponse`), porque son datos calculados que no existen como tabla (sección 15).
 
@@ -296,7 +296,7 @@ Los 401 (sin token) y 403 (rol sin permiso) de las reglas de `SecurityConfig` **
 ## 9. Pruebas unitarias (`src/test/.../service/`)
 
 `CategoriaServiceTest` (11 pruebas), `ProductoServiceTest` (14), `BoletaServiceTest` (19),
-`UsuarioServiceTest` (18), `AuthServiceTest` (3) y `ReporteServiceTest` (8) usan **JUnit 5 + Mockito**:
+`UsuarioServiceTest` (18), `AuthServiceTest` (6) y `ReporteServiceTest` (8) usan **JUnit 5 + Mockito**:
 
 - `@ExtendWith(MockitoExtension.class)`: activa Mockito en la clase de prueba.
 - `@Mock`: crea un repositorio falso; **no se usa MySQL**.
@@ -315,8 +315,8 @@ Patrón de cada prueba: **preparar** (`when`) → **ejecutar** (llamar al servic
 Se ejecutan con `./mvnw test`. `LevelupBackendApplicationTests` levanta la aplicación completa,
 por eso sí necesita MySQL encendido (y `JWT_SECRET` en `local.properties`).
 
-Pruebas de seguridad (sección 14.8): `JwtServiceTest` (6, sin Spring ni Mockito) y `SeguridadTest`
-(27, MockMvc, sin MySQL). En total: **107 pruebas**.
+Pruebas de seguridad (sección 14.8): `JwtServiceTest` (7, sin Spring ni Mockito) y `SeguridadTest`
+(32, MockMvc, sin MySQL). En total: **116 pruebas**.
 
 ---
 
@@ -507,7 +507,8 @@ Registro, login y perfil (`AuthController`):
 | Método | Ruta | Acceso | OK | Errores |
 |---|---|---|---|---|
 | POST | `/api/v1/auth/registro` | público | 201 | 400 (validación, menor de edad, referido inexistente), 409 (correo) |
-| POST | `/api/v1/auth/login` | público | 200 (token + usuario) | 400, 401 (credenciales) |
+| POST | `/api/v1/auth/login` | público | 200 (token + expiraEn + usuario) | 400, 401 (credenciales) |
+| POST | `/api/v1/auth/refresh` | con sesión (token **no vencido**) | 200 (token nuevo + expiraEn + usuario) | 401 (sin token, alterado, vencido o usuario eliminado) |
 | GET | `/api/v1/auth/me` | con sesión | 200 | 401 |
 | GET | `/api/v1/auth/perfil` | con sesión | 200 | 401 |
 | PUT | `/api/v1/auth/perfil` | con sesión | 200 | 400, 401 |
@@ -692,8 +693,10 @@ Cambiar `.hasAnyRole("ADMIN", "VENDEDOR")` por `.permitAll()` en la regla de `/a
 2. `SecurityConfig`: `.hasAnyRole("ADMIN", "VENDEDOR", "BODEGUERO")` en `/productos/criticos`.
 3. `UsuarioDetailsService` no cambia: arma `"ROLE_" + rol` solo.
 
-### Cambiar la duración del token (ej: 1 hora)
-`application.properties`: `jwt.expiracion=3600000` (1 × 60 × 60 × 1000). No hay que tocar código.
+### Cambiar la duración del token (ej: 30 minutos)
+`application.properties`: `jwt.expiracion=1800000` (30 × 60 × 1000). No hay que tocar código: `expiraEn` del login
+y de `/refresh` se calcula solo a partir del `exp` del token. Actualizar el comentario del archivo y la descripción
+"válido por 60 minutos" de los `@Operation` de login y refresh en `AuthController`.
 
 ### Agregar un dato al token (ej: el nombre)
 En `JwtService.generarToken`: `.claim("nombre", usuario.getNombre())`. Recordar que el payload **no está cifrado**:
@@ -747,7 +750,7 @@ Archivos (paquete `security/`):
 
 | Archivo | Qué hace |
 |---|---|
-| `JwtService` | Genera y valida los tokens (firma HMAC-SHA con `jwt.secret`, vencen en `jwt.expiracion` = 8 h). |
+| `JwtService` | Genera y valida los tokens (firma HMAC-SHA con `jwt.secret`, vencen en `jwt.expiracion` = 60 min). `obtenerVencimiento` lee el `exp` para responder `expiraEn`. |
 | `JwtAuthenticationFilter` | Filtro (`OncePerRequestFilter`) que lee `Authorization: Bearer <token>` en cada petición. |
 | `UsuarioDetailsService` | Busca al usuario por correo y le da la authority `ROLE_` + rol (ej: `ROLE_ADMIN`). |
 | `SecurityConfig` | Reglas: qué rol puede usar cada ruta. Stateless, sin CSRF, con CORS. |
@@ -764,7 +767,7 @@ y las excepciones `CredencialesInvalidasException` (401) y `AccesoDenegadoExcept
 |---|---|---|---|---|
 | Swagger (`/swagger-ui/**`, `/v3/api-docs/**`) | ✅ | ✅ | ✅ | ✅ |
 | `POST /auth/login`, `POST /auth/registro` | ✅ | ✅ | ✅ | ✅ |
-| `GET /auth/me`, `GET` y `PUT /auth/perfil` | 401 | ✅ | ✅ | ✅ |
+| `GET /auth/me`, `GET` y `PUT /auth/perfil`, `POST /auth/refresh` | 401 | ✅ | ✅ | ✅ |
 | `GET /productos`, `/productos/ofertas`, `/productos/{id}` | ✅ | ✅ | ✅ | ✅ |
 | `GET /productos/criticos` | 401 | 403 | ✅ | ✅ |
 | `POST`, `PUT`, `DELETE /productos/**` | 401 | 403 | 403 | ✅ |
@@ -787,8 +790,9 @@ y las excepciones `CredencialesInvalidasException` (401) y `AccesoDenegadoExcept
    AuthController.login → AuthService.login
      → UsuarioRepository.findByCorreoIgnoreCase      (¿existe?  si no → 401)
      → passwordEncoder.matches(password, hash)        (¿coincide? si no → 401)
-     → JwtService.generarToken(usuario)                (sub = correo, rol = CLIENTE, exp = +8 h)
-   ← 200 {"token":"eyJhbGciOiJIUzUxMiJ9.eyJzdWIi...","tipo":"Bearer","usuario":{...,"rol":"CLIENTE"}}
+     → JwtService.generarToken(usuario)                (sub = correo, rol = CLIENTE, exp = +60 min)
+   ← 200 {"token":"eyJhbGciOiJIUzUxMiJ9.eyJzdWIi...","tipo":"Bearer","expiraEn":1795442400000,
+          "usuario":{...,"rol":"CLIENTE"}}
 
 2. EL FRONTEND GUARDA EL TOKEN y lo envía en cada petición:
    GET /api/v1/boletas/mis-compras
@@ -883,18 +887,22 @@ Si se respetara el `usuarioId` de un visitante, cualquiera podría comprar "como
 2. Copiar el valor de `token` (sin comillas).
 3. Botón **Authorize** (arriba a la derecha) → pegar el token **sin escribir "Bearer"** → Authorize.
 4. Los endpoints con candado ahora envían el token. Para cambiar de usuario: Authorize → Logout → otro token.
+5. Para probar la renovación: `POST /api/v1/auth/refresh` (sin cuerpo) → responde un token nuevo. Ojo: Swagger
+   sigue enviando el token que se pegó en Authorize hasta que se reemplace por el nuevo.
 
 Prueba rápida de la tabla: con el token de `vendedor@levelup.cl` / `vendedor1234`, `GET /api/v1/boletas` → 200 y
 `POST /api/v1/productos` → 403; con el de `pedro@duocuc.cl` / `pedro1234`, `GET /api/v1/boletas/usuario/1` → 403
 y `GET /api/v1/boletas/mis-compras` → 200.
 
 ### 14.8 Pruebas de seguridad
-- `JwtServiceTest` (6): se crea con `new JwtService(clave, duración)`. Comprueba el subject y el claim `rol`, y que se
+- `JwtServiceTest` (7): se crea con `new JwtService(clave, duración)`. Comprueba el subject, el claim `rol` y que el
+  vencimiento sea "ahora + 60 minutos" (`obtenerVencimiento`), y que se
   rechacen un token con el payload modificado, uno firmado con otra clave, uno vencido (duración negativa) y un
   texto que no es token. También, que una clave de menos de 32 caracteres impida arrancar.
-- `AuthServiceTest` (3, Mockito): login correcto (token + `"Bearer"` + usuario), contraseña incorrecta y correo
-  inexistente (mismo mensaje en los dos casos, y no se genera token).
-- `SeguridadTest` (27, MockMvc; 4 son de los reportes): `@WebMvcTest` carga solo la capa web + nuestra seguridad (`@Import`), con los
+- `AuthServiceTest` (6, Mockito): login correcto (token + `"Bearer"` + `expiraEn` + usuario), contraseña incorrecta y
+  correo inexistente (mismo mensaje en los dos casos, y no se genera token). `renovarToken`: usuario existente (token
+  nuevo con `expiraEn`), rol cambiado por el admin (el token nuevo usa el rol actual) y usuario eliminado (401).
+- `SeguridadTest` (32, MockMvc; 4 son de los reportes y 5 de `/refresh`): `@WebMvcTest` carga solo la capa web + nuestra seguridad (`@Import`), con los
   services como `@MockitoBean`. Por eso **no necesita MySQL**: prueba quién puede entrar a cada ruta, no la lógica.
   - `@WithMockUser(username = "...", roles = "VENDEDOR")` simula una sesión sin token.
   - Las pruebas "con token real" generan un JWT con `JwtService` y lo envían en el header: prueban el camino
@@ -912,8 +920,8 @@ y `GET /api/v1/boletas/mis-compras` → 200.
 
 ### 14.10 Preguntas posibles de la defensa
 - **¿Dónde se guarda la sesión?** En ningún lado del servidor (stateless): en el token, que guarda el frontend.
-- **¿Cómo se cierra sesión?** El frontend borra el token. El token sigue siendo válido hasta que vence (8 h);
-  para invalidarlo antes habría que mantener una "lista negra" en el servidor.
+- **¿Cómo se cierra sesión?** El frontend borra el token. El token sigue siendo válido hasta que vence (60 min);
+  para invalidarlo antes habría que mantener una "lista negra" en el servidor. Ver 14.11.
 - **¿Por qué el login dice "Correo o contraseña incorrectos" en ambos casos?** Para no revelar qué correos
   están registrados.
 - **¿Qué pasa si roban `JWT_SECRET`?** Podrían fabricar tokens de ADMIN. Por eso va en `local.properties`
@@ -921,6 +929,68 @@ y `GET /api/v1/boletas/mis-compras` → 200.
 - **¿Diferencia entre 401 y 403?** 401 = no sé quién eres (sin token o token malo). 403 = sé quién eres, pero
   tu rol no puede hacer eso.
 - **¿Por qué no hay CSRF?** Ver 14.3: no hay cookies de sesión.
+
+### 14.11 Renovación del token (`POST /api/v1/auth/refresh`)
+
+Pauta EFT: "manejo de sesiones con renovación de token".
+
+**¿Por qué un token corto (60 min) que se renueva?** El servidor es stateless: no guarda sesiones, así que
+**no puede anular un token** antes de que venza. Si alguien roba un token de 8 horas, lo puede usar 8 horas.
+Con 60 minutos el daño queda limitado a como máximo 1 hora, y el usuario no nota nada porque el frontend pide
+un token nuevo antes de que venza. Además, cada renovación vuelve a leer al usuario en MySQL: si el admin le cambió
+el rol, el token nuevo trae el rol nuevo; si lo eliminó, ya no puede renovar.
+
+Archivos: `AuthController.renovarToken` → `AuthService.renovarToken(correo)` → `UsuarioRepository.findByCorreoIgnoreCase`
+→ MySQL, y `JwtService.generarToken` + `JwtService.obtenerVencimiento`. La respuesta es la misma `LoginResponse`
+del login. `AuthService.armarRespuesta` es el método privado que comparten login y refresh (genera el token, lee
+su `exp` y arma la respuesta), así no se repite código.
+
+```
+1. LOGIN        POST /api/v1/auth/login → {"token":"A...", "expiraEn":1795442400000, ...}
+                el frontend guarda token y expiraEn
+
+2. USAR TOKEN   GET /api/v1/boletas/mis-compras   Authorization: Bearer A...
+
+3. RENOVAR      cuando falten pocos minutos (ej: Date.now() > expiraEn - 5 min):
+   (antes de    POST /api/v1/auth/refresh          Authorization: Bearer A...   (sin cuerpo)
+    que venza)  JwtAuthenticationFilter: firma OK, no vencido, usuario existe → autenticado
+                SecurityConfig: "/api/v1/auth/**" authenticated → ✅
+                AuthController: authentication.getName() = correo del token
+                AuthService.renovarToken: busca al usuario en MySQL → token NUEVO con sus datos actuales
+                ← 200 {"token":"B...", "expiraEn":<ahora + 60 min>, ...}
+                el frontend reemplaza A por B
+
+4. SI YA VENCIÓ POST /api/v1/auth/refresh con A vencido → 401 "El token no es válido o expiró. Inicia sesión
+                nuevamente" → el frontend borra el token y manda al usuario a iniciar sesión (paso 1).
+```
+
+**Casos 401** (ninguno llega al service; los rechaza la cadena de Spring Security y los responde `SeguridadErrorHandler`):
+
+| Caso | Qué pasa en `JwtAuthenticationFilter` | Mensaje |
+|---|---|---|
+| Sin token | no hay header → visitante | "Debes iniciar sesión para acceder a este recurso" |
+| Token alterado (ej: rol cambiado a ADMIN) | `esTokenValido` = false (la firma no calza) | "El token no es válido o expiró. Inicia sesión nuevamente" |
+| Token vencido | `esTokenValido` = false (JJWT revisa `exp`) | "El token no es válido o expiró. Inicia sesión nuevamente" |
+| Usuario eliminado | `UsernameNotFoundException` → no queda autenticado | "El usuario del token ya no existe" |
+
+`AuthService.renovarToken` igual revisa que el usuario exista (`CredencialesInvalidasException` → 401 por
+`GlobalExceptionHandler`): cubre el caso raro de que lo eliminen justo entre el filtro y el service.
+
+¿Por qué no se puede renovar un token vencido? Porque entonces un token robado se podría renovar para siempre.
+La regla es: **renovar mientras sea válido; si venció, volver a escribir la contraseña**.
+
+**Preguntas posibles de la defensa**
+- **¿Qué pasa si roban el token?** El ladrón puede usarlo (y renovarlo) mientras siga vigente, porque el servidor
+  no guarda sesiones. Por eso dura solo 60 minutos: si el usuario elimina la cuenta o el admin la borra, el
+  ladrón ya no puede renovar (401 "El usuario del token ya no existe"). Para cortarlo antes habría que guardar
+  una "lista negra" de tokens en el servidor o cambiar `JWT_SECRET` (eso invalida **todos** los tokens).
+  Para que sea difícil robarlo: HTTPS en producción y no exponerlo en la URL ni en logs.
+- **¿Por qué `expiraEn` y no que el frontend lea el `exp` del token?** Podría decodificarlo, pero así el frontend
+  no necesita una librería JWT: recibe la fecha lista en milisegundos (igual que `Date.now()` en JavaScript).
+- **¿El refresh pide la contraseña?** No: el token válido ya demuestra quién es. Por eso exige que **no** esté vencido.
+- **Si un admin cambia el rol de un usuario, ¿cuándo lo ve el frontend?** El backend lo aplica de inmediato (rol
+  desde MySQL en cada petición, 14.2); el claim `rol` del token y `usuario.rol` se actualizan en el siguiente refresh.
+- **¿Cómo cambio la duración?** Solo `jwt.expiracion` en `application.properties` (sección 12).
 
 ---
 

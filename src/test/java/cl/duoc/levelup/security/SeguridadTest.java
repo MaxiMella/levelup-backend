@@ -30,6 +30,8 @@ import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
 
@@ -103,6 +105,9 @@ class SeguridadTest {
               "region": "Región Metropolitana", "comuna": "Santiago", "usuarioId": 3,
               "items": [ { "productoId": 1, "cantidad": 1 } ] }
             """;
+
+    /** Fecha de vencimiento ficticia (milisegundos epoch) para las respuestas simuladas de login y refresh. */
+    private static final long VENCIMIENTO = 1795442400000L;
 
     private Usuario usuario(Long id, String correo, Rol rol) {
         Usuario usuario = new Usuario();
@@ -356,13 +361,15 @@ class SeguridadTest {
         UsuarioResponse pedro = new UsuarioResponse();
         pedro.setCorreo("pedro@duocuc.cl");
         pedro.setRol(Rol.CLIENTE);
-        when(authService.login(any(LoginRequest.class))).thenReturn(new LoginResponse("abc.def.ghi", "Bearer", pedro));
+        when(authService.login(any(LoginRequest.class)))
+                .thenReturn(new LoginResponse("abc.def.ghi", "Bearer", VENCIMIENTO, pedro));
 
         mockMvc.perform(post("/api/v1/auth/login").contentType(MediaType.APPLICATION_JSON)
                         .content("{ \"correo\": \"pedro@duocuc.cl\", \"password\": \"pedro1234\" }"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.token").value("abc.def.ghi"))
                 .andExpect(jsonPath("$.tipo").value("Bearer"))
+                .andExpect(jsonPath("$.expiraEn").value(VENCIMIENTO))
                 .andExpect(jsonPath("$.usuario.rol").value("CLIENTE"))
                 .andExpect(jsonPath("$.usuario.password").doesNotExist());
     }
@@ -385,5 +392,79 @@ class SeguridadTest {
                         .content("{ \"correo\": \"pedro@duocuc.cl\" }"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.campos.password").value("La contraseña es obligatoria"));
+    }
+
+    // ===================== Renovar token (POST /auth/refresh) =====================
+
+    @Test
+    void refresh_conTokenValido_200ConTokenNuevo() throws Exception {
+        String token = tokenDe(usuario(3L, "pedro@duocuc.cl", Rol.CLIENTE));
+        UsuarioResponse pedro = new UsuarioResponse();
+        pedro.setCorreo("pedro@duocuc.cl");
+        pedro.setRol(Rol.CLIENTE);
+        // El controller le pasa al service el correo del token (authentication.getName()).
+        when(authService.renovarToken("pedro@duocuc.cl"))
+                .thenReturn(new LoginResponse("token.nuevo.123", "Bearer", VENCIMIENTO, pedro));
+
+        mockMvc.perform(post("/api/v1/auth/refresh").header("Authorization", token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.token").value("token.nuevo.123"))
+                .andExpect(jsonPath("$.tipo").value("Bearer"))
+                .andExpect(jsonPath("$.expiraEn").value(VENCIMIENTO))
+                .andExpect(jsonPath("$.usuario.correo").value("pedro@duocuc.cl"))
+                .andExpect(jsonPath("$.usuario.password").doesNotExist());
+    }
+
+    @Test
+    void refresh_sinToken_401() throws Exception {
+        mockMvc.perform(post("/api/v1/auth/refresh"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.mensaje").value("Debes iniciar sesión para acceder a este recurso"));
+
+        verify(authService, never()).renovarToken(any());
+    }
+
+    @Test
+    void refresh_conTokenAlterado_401() throws Exception {
+        String token = jwtService.generarToken(usuario(3L, "pedro@duocuc.cl", Rol.CLIENTE));
+        String[] partes = token.split("\\.");
+        // Pedro cambia el payload para renovar como ADMIN, pero no puede recalcular la firma sin la clave.
+        String payloadFalso = Base64.getUrlEncoder().withoutPadding().encodeToString(
+                "{\"sub\":\"pedro@duocuc.cl\",\"rol\":\"ADMIN\"}".getBytes(StandardCharsets.UTF_8));
+        String alterado = "Bearer " + partes[0] + "." + payloadFalso + "." + partes[2];
+
+        mockMvc.perform(post("/api/v1/auth/refresh").header("Authorization", alterado))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.mensaje").value("El token no es válido o expiró. Inicia sesión nuevamente"));
+
+        verify(authService, never()).renovarToken(any());
+    }
+
+    @Test
+    void refresh_conTokenVencido_401() throws Exception {
+        // Misma clave que la aplicación, pero con duración negativa: el token nace vencido.
+        // Un token vencido no se puede renovar: hay que volver a iniciar sesión.
+        JwtService conTokensVencidos = new JwtService("clave-de-prueba-para-los-tests-de-seguridad-123456", -1000);
+        String vencido = "Bearer " + conTokensVencidos.generarToken(usuario(3L, "pedro@duocuc.cl", Rol.CLIENTE));
+
+        mockMvc.perform(post("/api/v1/auth/refresh").header("Authorization", vencido))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.mensaje").value("El token no es válido o expiró. Inicia sesión nuevamente"));
+
+        verify(authService, never()).renovarToken(any());
+    }
+
+    @Test
+    void refresh_usuarioBorrado_401() throws Exception {
+        // Token bien firmado, pero el usuario ya no está en la base de datos (el repositorio simulado no lo encuentra):
+        // JwtAuthenticationFilter no lo deja autenticado y la regla de SecurityConfig responde 401.
+        String token = "Bearer " + jwtService.generarToken(usuario(9L, "borrado@gmail.com", Rol.CLIENTE));
+        when(usuarioRepository.findByCorreoIgnoreCase("borrado@gmail.com")).thenReturn(Optional.empty());
+
+        mockMvc.perform(post("/api/v1/auth/refresh").header("Authorization", token))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.mensaje").value("El usuario del token ya no existe"));
+
+        verify(authService, never()).renovarToken(any());
     }
 }

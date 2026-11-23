@@ -43,7 +43,7 @@ public class JwtService {
         this.expiracionMs = expiracionMs;
     }
 
-    /** Genera el token del usuario que acaba de iniciar sesión. */
+    /** Genera el token del usuario que acaba de iniciar sesión (o que renueva su token). */
     public String generarToken(Usuario usuario) {
         Date ahora = new Date();
         Date vence = new Date(ahora.getTime() + expiracionMs);
@@ -76,6 +76,14 @@ public class JwtService {
     /** Rol guardado en el token (ej: "CLIENTE"). Lanza JwtException si el token no es válido. */
     public String obtenerRol(String token) {
         return leerClaims(token).get("rol", String.class);
+    }
+
+    /**
+     * Fecha de vencimiento (el "exp" del token). AuthService la usa para responder "expiraEn" en el login
+     * y en la renovación, así el frontend sabe cuándo pedir un token nuevo. Lanza JwtException si el token no es válido.
+     */
+    public Date obtenerVencimiento(String token) {
+        return leerClaims(token).getExpiration();
     }
 
     /** Verifica la firma y la fecha de vencimiento, y devuelve el payload. */

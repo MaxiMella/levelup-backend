@@ -121,6 +121,8 @@ Para probar los endpoints protegidos:
 1. `POST /api/v1/auth/login` → *Try it out* → `{"correo":"admin@levelup.cl","password":"admin1234"}`.
 2. Copiar el valor de `token` de la respuesta (sin comillas).
 3. Botón **Authorize** (arriba a la derecha) → pegar el token **sin escribir "Bearer"** → *Authorize*.
+4. El token dura 60 minutos. Antes de que venza, `POST /api/v1/auth/refresh` entrega uno nuevo (hay que pegarlo
+   otra vez en *Authorize*). Si ya venció, volver al paso 1.
 
 ---
 
@@ -160,7 +162,8 @@ Sin token, una ruta protegida responde **401**; con un rol sin permiso, **403**.
 | Método | Ruta | Quién puede usarlo |
 |---|---|---|
 | POST | `/api/v1/auth/registro` | Público (siempre crea un CLIENTE) |
-| POST | `/api/v1/auth/login` | Público (devuelve el token JWT) |
+| POST | `/api/v1/auth/login` | Público (devuelve el token JWT, válido 60 minutos, y su vencimiento `expiraEn`) |
+| POST | `/api/v1/auth/refresh` | Con sesión y token **no vencido** (devuelve un token nuevo; vencido → 401, volver a iniciar sesión) |
 | GET | `/api/v1/auth/me` | Con sesión |
 | GET | `/api/v1/auth/perfil` | Con sesión |
 | PUT | `/api/v1/auth/perfil` | Con sesión (solo su propio perfil) |
@@ -245,7 +248,7 @@ Son datos ficticios: no reutilizar estas contraseñas en ningún sistema real.
 .\mvnw.cmd test      # Windows
 ```
 
-107 pruebas con **JUnit 5 + Mockito** (y MockMvc para la seguridad):
+116 pruebas con **JUnit 5 + Mockito** (y MockMvc para la seguridad):
 
 | Clase | Pruebas | Qué revisa |
 |---|---|---|
@@ -253,10 +256,10 @@ Son datos ficticios: no reutilizar estas contraseñas en ningún sistema real.
 | `ProductoServiceTest` | 14 | Filtros, oferta menor al precio, producto vendido |
 | `BoletaServiceTest` | 19 | IVA, descuento Duoc, stock, pago simulado, quién compra |
 | `UsuarioServiceTest` | 18 | Registro, mayoría de edad, referidos, BCrypt, perfil |
-| `AuthServiceTest` | 3 | Login correcto e incorrecto |
+| `AuthServiceTest` | 6 | Login correcto e incorrecto, renovación del token |
 | `ReporteServiceTest` | 8 | Dashboard y métricas de ventas |
-| `JwtServiceTest` | 6 | Generación y validación del token |
-| `SeguridadTest` | 27 | Qué rol puede entrar a cada ruta (401 / 403) |
+| `JwtServiceTest` | 7 | Generación, vencimiento y validación del token |
+| `SeguridadTest` | 32 | Qué rol puede entrar a cada ruta (401 / 403) y `/auth/refresh` |
 | `LevelupBackendApplicationTests` | 1 | Que la aplicación completa arranque |
 
 Las pruebas de services, JWT y seguridad **no usan MySQL** (repositorios simulados con Mockito).
