@@ -32,6 +32,8 @@
 		<springdoc.version>3.2.0</springdoc.version>
 		<!-- JJWT (tokens JWT). 0.13.0 es la última versión; se usa con Gson (ver jjwt-gson más abajo) -->
 		<jjwt.version>0.13.0</jjwt.version>
+		<!-- JaCoCo (cobertura de pruebas). 0.8.16 es la última versión estable y es compatible con Java 21 -->
+		<jacoco.version>0.8.16</jacoco.version>
 	</properties>
 	<dependencies>
 		<dependency>
@@ -157,6 +159,49 @@
 									<artifactId>lombok</artifactId>
 								</path>
 							</annotationProcessorPaths>
+						</configuration>
+					</execution>
+				</executions>
+			</plugin>
+			<!-- JaCoCo: mide qué parte del código ejecutan las pruebas.
+			     - prepare-agent: antes de las pruebas, conecta el agente de JaCoCo a la JVM de Surefire
+			       (lo hace agregando el agente a la propiedad argLine) para registrar qué líneas se ejecutan.
+			     - report: al terminar las pruebas (fase test), genera el reporte HTML en
+			       target/site/jacoco/index.html (también deja jacoco.xml y jacoco.csv en la misma carpeta).
+			     Así, con solo ejecutar ./mvnw test se obtiene el reporte de cobertura. -->
+			<plugin>
+				<groupId>org.jacoco</groupId>
+				<artifactId>jacoco-maven-plugin</artifactId>
+				<version>${jacoco.version}</version>
+				<executions>
+					<execution>
+						<id>prepare-agent</id>
+						<goals>
+							<goal>prepare-agent</goal>
+						</goals>
+					</execution>
+					<execution>
+						<id>report</id>
+						<phase>test</phase>
+						<goals>
+							<goal>report</goal>
+						</goals>
+						<configuration>
+							<!-- Se excluye del reporte lo que no tiene lógica de negocio que probar,
+							     para que el porcentaje refleje el código que sí importa:
+							     - LevelupBackendApplication: solo tiene el main que arranca Spring Boot.
+							     - dto: clases que solo transportan datos (campos, getters y setters de Lombok).
+							     - model: entidades JPA y enums; solo campos, anotaciones y métodos generados por Lombok.
+							     - config/DataInitializer: solo inserta datos ficticios de prueba al arrancar
+							       (usa MySQL real, por eso no se prueba con pruebas unitarias).
+							     Las rutas son de los archivos .class compilados. El "*" de DataInitializer*
+							     incluye también sus clases internas o lambdas (DataInitializer$1.class, etc.). -->
+							<excludes>
+								<exclude>cl/duoc/levelup/LevelupBackendApplication.class</exclude>
+								<exclude>cl/duoc/levelup/dto/**</exclude>
+								<exclude>cl/duoc/levelup/model/**</exclude>
+								<exclude>cl/duoc/levelup/config/DataInitializer*.class</exclude>
+							</excludes>
 						</configuration>
 					</execution>
 				</executions>

@@ -318,6 +318,12 @@ por eso sí necesita MySQL encendido (y `JWT_SECRET` en `local.properties`).
 Pruebas de seguridad (sección 14.8): `JwtServiceTest` (7, sin Spring ni Mockito) y `SeguridadTest`
 (32, MockMvc, sin MySQL). En total: **116 pruebas**.
 
+**Cobertura (JaCoCo):** el plugin `jacoco-maven-plugin` del `pom.xml` tiene dos goals: `prepare-agent` conecta un
+agente a la JVM de las pruebas que anota qué líneas se ejecutan (en `target/jacoco.exec`), y `report` (en la fase
+`test`) convierte eso en el reporte `target/site/jacoco/index.html`. Se excluyen `LevelupBackendApplication`, `dto`,
+`model` y `DataInitializer` porque no tienen lógica de negocio. Para excluir otra clase, se agrega un
+`<exclude>` con la ruta del `.class` (ej: `cl/duoc/levelup/config/OpenApiConfig.class`).
+
 ---
 
 ## 10. Boletas (órdenes de compra)

@@ -241,7 +241,7 @@ Son datos ficticios: no reutilizar estas contraseñas en ningún sistema real.
 
 ---
 
-## Pruebas
+## Pruebas y cobertura
 
 ```bash
 ./mvnw test          # Linux / macOS / Git Bash
@@ -265,6 +265,19 @@ Son datos ficticios: no reutilizar estas contraseñas en ningún sistema real.
 Las pruebas de services, JWT y seguridad **no usan MySQL** (repositorios simulados con Mockito).
 `LevelupBackendApplicationTests` levanta la aplicación completa, así que necesita **MySQL encendido** y
 `local.properties` con `DB_PASSWORD` y `JWT_SECRET`.
+
+### Cobertura con JaCoCo
+
+El mismo `./mvnw test` mide la cobertura con el plugin **JaCoCo 0.8.16** (configurado en `pom.xml`) y genera
+el reporte al terminar. Para verlo, abrir en el navegador:
+
+```
+target/site/jacoco/index.html
+```
+
+En la misma carpeta quedan `jacoco.xml` y `jacoco.csv` con los mismos datos. Del reporte se excluye lo que no
+tiene lógica que probar: `LevelupBackendApplication`, los paquetes `dto` y `model`, y `config/DataInitializer`
+(el motivo está comentado en el `pom.xml`).
 
 ---
 
